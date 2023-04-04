@@ -94,7 +94,11 @@
 #define AOC_S2MPU_CTRL_PROTECTION_ENABLE_VID_MASK_ALL 0xFF
 
 #define AOC_MAX_MINOR (1U)
-#define AOC_MBOX_CHANNELS 16
+#if IS_ENABLED(CONFIG_SOC_GS101)
+	#define AOC_MBOX_CHANNELS 16 /* AP-A32 mbox */
+#else
+	#define AOC_MBOX_CHANNELS (16 * 3) /* AP-A32, AP-F1 and AP-P6 mbox */
+#endif
 
 #define AOC_FWDATA_ENTRIES 10
 #define AOC_FWDATA_BOARDID_DFL  0x20202
@@ -138,6 +142,7 @@
 #define AOC_RESTART_DISABLED_RC (0xD15AB1ED)
 
 #define MAX_SENSOR_POWER_NUM 5
+#define MAX_DMIC_POWER_NUM 4
 
 static DEFINE_MUTEX(aoc_service_lock);
 
@@ -150,7 +155,6 @@ enum AOC_FW_STATE {
 static enum AOC_FW_STATE aoc_state;
 
 static struct platform_device *aoc_platform_device;
-
 
 struct mbox_slot {
 	struct mbox_client client;
@@ -195,6 +199,7 @@ struct aoc_prvdata {
 	struct work_struct watchdog_work;
 	bool aoc_reset_done;
 	bool ap_triggered_reset;
+	bool force_release_aoc;
 	char ap_reset_reason[AP_RESET_REASON_LENGTH];
 	wait_queue_head_t aoc_reset_wait_queue;
 	unsigned int acpm_async_id;
@@ -227,6 +232,10 @@ struct aoc_prvdata {
 	int sensor_power_count;
 	const char *sensor_power_list[MAX_SENSOR_POWER_NUM];
 	struct regulator *sensor_regulator[MAX_SENSOR_POWER_NUM];
+
+	int dmic_power_count;
+	const char *dmic_power_list[MAX_DMIC_POWER_NUM];
+	struct regulator *dmic_regulator[MAX_DMIC_POWER_NUM];
 };
 
 /* TODO: Reduce the global variables (move into a driver structure) */
@@ -299,6 +308,7 @@ static unsigned long write_blocked_mask;
 
 static bool write_reset_trampoline(u32 addr);
 static bool aoc_a32_release_from_reset(void);
+static bool configure_dmic_regulator(struct aoc_prvdata *prvdata, bool enable);
 static bool configure_sensor_regulator(struct aoc_prvdata *prvdata, bool enable);
 static int aoc_watchdog_restart(struct aoc_prvdata *prvdata);
 static void acpm_aoc_reset_callback(unsigned int *cmd, unsigned int size);
@@ -735,13 +745,8 @@ static int aoc_fw_authenticate(struct aoc_prvdata *prvdata,
 
 	memcpy(header_vaddr, fw->data, AOC_AUTH_HEADER_SIZE);
 
-// TODO(b/238553915): [Zuma] Enable GSA boot
-#if !IS_ENABLED(CONFIG_SOC_ZUMA)
 	rc = gsa_load_aoc_fw_image(prvdata->gsa_dev, header_dma_addr,
 				   prvdata->dram_resource.start + AOC_BINARY_DRAM_OFFSET);
-#else
-	rc = -1;
-#endif
 	if (rc) {
 		dev_err(prvdata->dev, "GSA authentication failed: %d\n", rc);
 		goto err_auth;
@@ -810,6 +815,11 @@ static void aoc_fw_callback(const struct firmware *fw, void *ctx)
 	if (!fw) {
 		dev_err(dev, "Failed to load AoC firmware image\n");
 		return;
+	}
+
+	if (prvdata->force_release_aoc) {
+		dev_info(dev, "Force Reload Trigger: Free current loaded\n");
+		goto free_fw;
 	}
 
 	for (i = 0; i < fw_data_entries; i++) {
@@ -896,17 +906,13 @@ static void aoc_fw_callback(const struct firmware *fw, void *ctx)
 	prvdata->ipc_base = aoc_dram_translate(prvdata, ipc_offset);
 
 	/* start AOC */
-// TODO(b/238553915): [Zuma] Enable GSA boot
-#if !IS_ENABLED(CONFIG_SOC_ZUMA)
 	if (fw_signed) {
 		int rc = gsa_send_aoc_cmd(prvdata->gsa_dev, GSA_AOC_START);
 		if (rc < 0) {
 			dev_err(dev, "GSA: Failed to start AOC: %d\n", rc);
 			goto free_fw;
 		}
-	} else
-#endif
-	{
+	} else {
 		aoc_a32_release_from_reset();
 	}
 
@@ -921,7 +927,12 @@ static void aoc_fw_callback(const struct firmware *fw, void *ctx)
 	dev_info(dev, "re-enabling SICD\n");
 	enable_power_mode(0, POWERMODE_TYPE_SYSTEM);
 
+	release_firmware(fw);
+	return;
+
 free_fw:
+	/* Change aoc_state to offline due to abnormal firmware */
+	aoc_state = AOC_STATE_OFFLINE;
 	release_firmware(fw);
 }
 
@@ -1017,6 +1028,8 @@ ssize_t aoc_service_read(struct aoc_service_dev *dev, uint8_t *buffer,
 	size_t msg_size;
 	int service_number;
 	int ret = 0;
+	bool was_full;
+	int interrupt = dev->mbox_index;
 
 	if (!dev || !buffer || !count)
 		return -EINVAL;
@@ -1029,18 +1042,30 @@ ssize_t aoc_service_read(struct aoc_service_dev *dev, uint8_t *buffer,
 
 	parent = dev->dev.parent;
 	prvdata = dev_get_drvdata(parent);
+	if (!prvdata)
+		return -ENODEV;
+
+	atomic_inc(&prvdata->aoc_process_active);
+	if (aoc_state != AOC_STATE_ONLINE || work_busy(&prvdata->watchdog_work)) {
+		ret = -EBUSY;
+		goto err;
+	}
 
 	service_number = dev->service_index;
 	service = service_at_index(prvdata, dev->service_index);
 
 	BUG_ON(!aoc_is_valid_dram_address(prvdata, service));
 
-	if (aoc_service_message_slots(service, AOC_UP) == 0)
-		return -EBADF;
+	if (aoc_service_message_slots(service, AOC_UP) == 0) {
+		ret = -EBADF;
+		goto err;
+	}
 
 	if (!aoc_service_can_read_message(service, AOC_UP)) {
-		if (!block)
-			return -EAGAIN;
+		if (!block) {
+			ret = -EAGAIN;
+			goto err;
+		}
 
 		set_bit(service_number, &read_blocked_mask);
 		ret = wait_event_interruptible(dev->read_queue,
@@ -1049,31 +1074,68 @@ ssize_t aoc_service_read(struct aoc_service_dev *dev, uint8_t *buffer,
 		clear_bit(service_number, &read_blocked_mask);
 	}
 
-	if (dev->dead)
-		return -ENODEV;
+	if (dev->dead) {
+		ret = -ENODEV;
+		goto err;
+	}
 
-	if (aoc_state != AOC_STATE_ONLINE)
-		return -ENODEV;
+	if (aoc_state != AOC_STATE_ONLINE) {
+		ret = -ENODEV;
+		goto err;
+	}
 
 	/*
 	 * The wait can fail if the AoC goes offline in the middle of a
 	 * blocking read, so check again after the wait
 	 */
-	if (ret != 0)
-		return -EAGAIN;
+	if (ret != 0) {
+		ret = -EAGAIN;
+		goto err;
+	}
 
 	if (!aoc_service_is_ring(service) &&
 	    count < aoc_service_current_message_size(service, prvdata->ipc_base,
-						     AOC_UP))
-		return -EFBIG;
+						     AOC_UP)) {
+		ret = -EFBIG;
+		goto err;
+	}
 
 	msg_size = count;
+	was_full = !aoc_service_can_write_message(service, AOC_UP);
+
 	aoc_service_read_message(service, prvdata->ipc_base, AOC_UP, buffer,
 				 &msg_size);
+
+	/*
+	 * If the service queue was full right before reading, signal AoC that
+	 * there is now space available to write.
+	 */
+	if (was_full)
+		signal_aoc(prvdata->mbox_channels[interrupt].channel);
+err:
+	atomic_dec(&prvdata->aoc_process_active);
+	if (ret < 0)
+		return ret;
 
 	return msg_size;
 }
 EXPORT_SYMBOL_GPL(aoc_service_read);
+
+
+bool aoc_online_state(struct aoc_service_dev *dev) {
+	struct aoc_prvdata *prvdata;
+	if (!dev)
+		return false;
+
+	prvdata = dev_get_drvdata(dev->dev.parent);
+	if (!prvdata)
+		return false;
+
+	if (aoc_state != AOC_STATE_ONLINE || work_busy(&prvdata->watchdog_work))
+		return false;
+	return true;
+}
+EXPORT_SYMBOL_GPL(aoc_online_state);
 
 ssize_t aoc_service_read_timeout(struct aoc_service_dev *dev, uint8_t *buffer,
 				 size_t count, long timeout)
@@ -1091,10 +1153,7 @@ ssize_t aoc_service_read_timeout(struct aoc_service_dev *dev, uint8_t *buffer,
 	if (dev->dead)
 		return -ENODEV;
 
-	if (!aoc_platform_device)
-		return -ENODEV;
-
-	prvdata = platform_get_drvdata(aoc_platform_device);
+	prvdata = dev_get_drvdata(dev->dev.parent);
 	if (!prvdata)
 		return -ENODEV;
 
@@ -1190,21 +1249,35 @@ ssize_t aoc_service_write(struct aoc_service_dev *dev, const uint8_t *buffer,
 
 	parent = dev->dev.parent;
 	prvdata = dev_get_drvdata(parent);
+	if (!prvdata)
+		return -ENODEV;
+
+	atomic_inc(&prvdata->aoc_process_active);
+	if (aoc_state != AOC_STATE_ONLINE || work_busy(&prvdata->watchdog_work)) {
+		ret = -EBUSY;
+		goto err;
+	}
 
 	service_number = dev->service_index;
 	service = service_at_index(prvdata, service_number);
 
 	BUG_ON(!aoc_is_valid_dram_address(prvdata, service));
 
-	if (aoc_service_message_slots(service, AOC_DOWN) == 0)
-		return -EBADF;
+	if (aoc_service_message_slots(service, AOC_DOWN) == 0) {
+		ret = -EBADF;
+		goto err;
+	}
 
-	if (count > aoc_service_message_size(service, AOC_DOWN))
-		return -EFBIG;
+	if (count > aoc_service_message_size(service, AOC_DOWN)) {
+		ret = -EFBIG;
+		goto err;
+	}
 
 	if (!aoc_service_can_write_message(service, AOC_DOWN)) {
-		if (!block)
-			return -EAGAIN;
+		if (!block) {
+			ret = -EAGAIN;
+			goto err;
+		}
 
 		set_bit(service_number, &write_blocked_mask);
 		ret = wait_event_interruptible(dev->write_queue,
@@ -1213,24 +1286,34 @@ ssize_t aoc_service_write(struct aoc_service_dev *dev, const uint8_t *buffer,
 		clear_bit(service_number, &write_blocked_mask);
 	}
 
-	if (dev->dead)
-		return -ENODEV;
+	if (dev->dead) {
+		ret = -ENODEV;
+		goto err;
+	}
 
-	if (aoc_state != AOC_STATE_ONLINE)
-		return -ENODEV;
+	if (aoc_state != AOC_STATE_ONLINE) {
+		ret = -ENODEV;
+		goto err;
+	}
 
 	/*
 	 * The wait can fail if the AoC goes offline in the middle of a
 	 * blocking write, so check again after the wait
 	 */
-	if (ret != 0)
-		return -EAGAIN;
+	if (ret != 0) {
+		ret = -EAGAIN;
+		goto err;
+	}
 
 	ret = aoc_service_write_message(service, prvdata->ipc_base, AOC_DOWN,
 					buffer, count);
 
 	if (!aoc_service_is_ring(service) || aoc_ring_is_push(service))
 		signal_aoc(prvdata->mbox_channels[interrupt].channel);
+err:
+	atomic_dec(&prvdata->aoc_process_active);
+	if (ret < 0)
+		return ret;
 
 	return count;
 }
@@ -1252,10 +1335,7 @@ ssize_t aoc_service_write_timeout(struct aoc_service_dev *dev, const uint8_t *bu
 	if (dev->dead)
 		return -ENODEV;
 
-	if (!aoc_platform_device)
-		return -ENODEV;
-
-	prvdata = platform_get_drvdata(aoc_platform_device);
+	prvdata = dev_get_drvdata(dev->dev.parent);
 	if (!prvdata)
 		return -ENODEV;
 
@@ -1826,6 +1906,44 @@ static ssize_t reset_store(struct device *dev, struct device_attribute *attr,
 
 static DEVICE_ATTR_WO(reset);
 
+static ssize_t force_reload_store(struct device *dev, struct device_attribute *attr,
+			   const char *buf, size_t count)
+{
+	struct aoc_prvdata *prvdata = dev_get_drvdata(dev);
+
+	/* Force release current loaded AoC if watchdog already active */
+	prvdata->force_release_aoc = true;
+	while (work_busy(&prvdata->watchdog_work) || work_busy(&prvdata->monitor_work.work));
+	prvdata->force_release_aoc = false;
+
+	/* Disable IRQ if AoC is loaded for paired IRQ */
+	if (aoc_state != AOC_STATE_OFFLINE)
+		disable_irq_nosync(prvdata->watchdog_irq);
+
+	strlcpy(prvdata->ap_reset_reason, "Force Reload AoC", AP_RESET_REASON_LENGTH);
+	prvdata->ap_triggered_reset = true;
+
+	schedule_work(&prvdata->watchdog_work);
+
+	return count;
+}
+static DEVICE_ATTR_WO(force_reload);
+
+static ssize_t dmic_power_enable_store(struct device *dev,
+                                         struct device_attribute *attr,
+                                         const char *buf, size_t count)
+{
+	struct aoc_prvdata *prvdata = dev_get_drvdata(dev);
+	int val;
+
+	if (kstrtoint(buf, 10, &val) == 0) {
+		dev_info(prvdata->dev,"dmic_power_enable %d", val);
+		configure_dmic_regulator(prvdata, !!val);
+	}
+	return count;
+}
+static DEVICE_ATTR_WO(dmic_power_enable);
+
 static ssize_t sensor_power_enable_store(struct device *dev,
                                          struct device_attribute *attr,
                                          const char *buf, size_t count)
@@ -1853,6 +1971,8 @@ static struct attribute *aoc_attrs[] = {
 	&dev_attr_aoc_clock_and_kernel_boottime.attr,
 	&dev_attr_reset.attr,
 	&dev_attr_sensor_power_enable.attr,
+	&dev_attr_force_reload.attr,
+	&dev_attr_dmic_power_enable.attr,
 	NULL
 };
 
@@ -1965,7 +2085,7 @@ static void aoc_configure_interrupt(void)
 	aoc_clear_gpio_interrupt();
 }
 
-static int aoc_remove_device(struct device *dev, void *ctx)
+static int aoc_wakeup_queues(struct device *dev, void *ctx)
 {
 	struct aoc_service_dev *the_dev = AOC_DEVICE(dev);
 
@@ -1979,8 +2099,12 @@ static int aoc_remove_device(struct device *dev, void *ctx)
 	wake_up(&the_dev->read_queue);
 	wake_up(&the_dev->write_queue);
 
-	device_unregister(dev);
+	return 0;
+}
 
+static int aoc_remove_device(struct device *dev, void *ctx)
+{
+	device_unregister(dev);
 	return 0;
 }
 
@@ -2219,34 +2343,19 @@ static void aoc_monitor_online(struct work_struct *work)
 {
 	struct aoc_prvdata *prvdata =
 		container_of(work, struct aoc_prvdata, monitor_work.work);
-	int restart_rc;
 
-
-	mutex_lock(&aoc_service_lock);
 	if (aoc_state == AOC_STATE_FIRMWARE_LOADED) {
 		dev_err(prvdata->dev, "aoc init no respond, try restart\n");
 
 #if IS_ENABLED(CONFIG_SOC_GS201)
 		/* TODO: Causing APC watchdogs on GS201 */
-		mutex_unlock(&aoc_service_lock);
 		return;
 #endif
-
 		disable_irq_nosync(prvdata->watchdog_irq);
-		aoc_take_offline(prvdata);
-		restart_rc = aoc_watchdog_restart(prvdata);
-		if (restart_rc == AOC_RESTART_DISABLED_RC) {
-			dev_info(prvdata->dev,
-				"aoc restart is disabled\n");
-		} else if (restart_rc) {
-			dev_info(prvdata->dev,
-				"aoc restart failed: rc = %d\n", restart_rc);
-		} else {
-			dev_info(prvdata->dev,
-				"aoc restart succeeded\n");
-		}
+		strlcpy(prvdata->ap_reset_reason, "Monitor Reset", AP_RESET_REASON_LENGTH);
+		prvdata->ap_triggered_reset = true;
+		schedule_work(&prvdata->watchdog_work);
 	}
-	mutex_unlock(&aoc_service_lock);
 }
 
 static void aoc_did_become_online(struct work_struct *work)
@@ -2348,6 +2457,72 @@ static bool configure_sensor_regulator(struct aoc_prvdata *prvdata, bool enable)
 	return (check_enabled == enable);
 }
 
+static bool configure_dmic_regulator(struct aoc_prvdata *prvdata, bool enable)
+{
+	bool check_enabled;
+	int i;
+	if (enable) {
+		check_enabled = true;
+		for (i = 0; i < prvdata->dmic_power_count; i++) {
+			if (!prvdata->dmic_regulator[i] ||
+					regulator_is_enabled(prvdata->dmic_regulator[i])) {
+				continue;
+			}
+
+			if (regulator_enable(prvdata->dmic_regulator[i])) {
+				pr_warn("encountered error on enabling %s.",
+					prvdata->dmic_power_list[i]);
+			}
+			check_enabled &= regulator_is_enabled(prvdata->dmic_regulator[i]);
+		}
+	} else {
+		check_enabled = false;
+
+		for (i = prvdata->dmic_power_count - 1; i >= 0; i--) {
+			if (!prvdata->dmic_regulator[i] ||
+					!regulator_is_enabled(prvdata->dmic_regulator[i])) {
+				continue;
+			}
+
+			if (regulator_disable(prvdata->dmic_regulator[i])) {
+				pr_warn(" encountered error on disabling %s.",
+					prvdata->dmic_power_list[i]);
+			}
+			check_enabled |= regulator_is_enabled(prvdata->dmic_regulator[i]);
+		}
+	}
+
+	return (check_enabled == enable);
+}
+
+static void aoc_parse_dmic_power(struct aoc_prvdata *prvdata, struct device_node *node)
+{
+	int i;
+	prvdata->dmic_power_count = of_property_count_strings(node, "dmic_power_list");
+	if (prvdata->dmic_power_count > MAX_DMIC_POWER_NUM) {
+		pr_warn("dmic power count %i is larger than available number.",
+			prvdata->dmic_power_count);
+		prvdata->dmic_power_count = MAX_DMIC_POWER_NUM;
+	} else if (prvdata->dmic_power_count < 0) {
+		pr_err("unsupported dmic power list, err = %i.", prvdata->dmic_power_count);
+		prvdata->dmic_power_count = 0;
+		return;
+	}
+
+	of_property_read_string_array(node, "dmic_power_list",
+				(const char **)&prvdata->dmic_power_list,
+				prvdata->dmic_power_count);
+
+	for (i = 0; i < prvdata->dmic_power_count; i++) {
+		prvdata->dmic_regulator[i] =
+			devm_regulator_get_exclusive(prvdata->dev, prvdata->dmic_power_list[i]);
+		if (IS_ERR_OR_NULL(prvdata->dmic_regulator[i])) {
+			prvdata->dmic_regulator[i] = NULL;
+			pr_err("failed to get %s regulator.", prvdata->dmic_power_list[i]);
+		}
+	}
+}
+
 static void reset_sensor_power(struct aoc_prvdata *prvdata, bool is_init)
 {
 	const int max_retry = 5;
@@ -2397,7 +2572,9 @@ static void aoc_take_offline(struct aoc_prvdata *prvdata)
 		aoc_state = AOC_STATE_OFFLINE;
 
 		/* wait until aoc_process or service write/read finish */
-		while (!!atomic_read(&prvdata->aoc_process_active));
+		while (!!atomic_read(&prvdata->aoc_process_active)) {
+			bus_for_each_dev(&aoc_bus_type, NULL, NULL, aoc_wakeup_queues);
+		}
 
 		bus_for_each_dev(&aoc_bus_type, NULL, NULL, aoc_remove_device);
 
@@ -2417,8 +2594,6 @@ static void aoc_take_offline(struct aoc_prvdata *prvdata)
 			dev_err(prvdata->dev, "timed out waiting for aoc_ack\n");
 	}
 
-// TODO(b/238553915): [Zuma] Enable GSA boot
-#if !IS_ENABLED(CONFIG_SOC_ZUMA)
 	/* TODO: GSA_AOC_SHUTDOWN needs to be 4, but the current header defines
 	 * as 2.  Change this when the header is updated
 	 */
@@ -2426,7 +2601,6 @@ static void aoc_take_offline(struct aoc_prvdata *prvdata)
 	rc = gsa_unload_aoc_fw_image(prvdata->gsa_dev);
 	if (rc)
 		dev_err(prvdata->dev, "GSA unload firmware failed: %d\n", rc);
-#endif
 }
 
 static void aoc_process_services(struct aoc_prvdata *prvdata, int offset)
@@ -3162,11 +3336,8 @@ static int aoc_platform_probe(struct platform_device *pdev)
 	rc = find_gsa_device(prvdata);
 	if (rc) {
 		dev_err(dev, "Failed to initialize gsa device: %d\n", rc);
-// TODO(b/238553915): [Zuma] Enable GSA boot
-#if !IS_ENABLED(CONFIG_SOC_ZUMA)
 		rc = -EINVAL;
 		goto err_failed_prvdata_alloc;
-#endif
 	}
 
 	ret = init_chardev(prvdata);
@@ -3364,6 +3535,9 @@ static int aoc_platform_probe(struct platform_device *pdev)
 
 	reset_sensor_power(prvdata, true);
 
+	aoc_parse_dmic_power(prvdata, dev->of_node);
+	configure_dmic_regulator(prvdata, true);
+
 	/* Default to 6MB if we are not loading the firmware (i.e. trace32) */
 	aoc_control = aoc_dram_translate(prvdata, 6 * SZ_1M);
 
@@ -3449,6 +3623,7 @@ static void aoc_platform_shutdown(struct platform_device *pdev)
 {
 	struct aoc_prvdata *prvdata = platform_get_drvdata(pdev);
 
+	disable_irq_nosync(prvdata->watchdog_irq);
 	aoc_take_offline(prvdata);
 }
 
