@@ -679,6 +679,42 @@ static int audio_capture_eraser_enable_ctl_set(struct snd_kcontrol *kcontrol,
 	return err;
 }
 
+#if ! IS_ENABLED(CONFIG_SOC_GS101)
+static int hotword_tap_enable_ctl_get(struct snd_kcontrol *kcontrol,
+					       struct snd_ctl_elem_value *ucontrol)
+{
+	struct aoc_chip *chip = snd_kcontrol_chip(kcontrol);
+
+	if (mutex_lock_interruptible(&chip->audio_mutex))
+		return -EINTR;
+
+	ucontrol->value.integer.value[0] = chip->hotword_tap_enable;
+
+	mutex_unlock(&chip->audio_mutex);
+
+	return 0;
+}
+
+static int hotword_tap_enable_ctl_set(struct snd_kcontrol *kcontrol,
+					       struct snd_ctl_elem_value *ucontrol)
+{
+	struct aoc_chip *chip = snd_kcontrol_chip(kcontrol);
+	int err = 0;
+
+	if (mutex_lock_interruptible(&chip->audio_mutex))
+		return -EINTR;
+
+	chip->hotword_tap_enable = ucontrol->value.integer.value[0];
+	err = aoc_hotword_tap_enable(chip, chip->hotword_tap_enable);
+	if (err < 0)
+		pr_err("ERR:%d hotword_tap %s fail\n", err,
+		       (chip->hotword_tap_enable) ? "Enable" : "Disable");
+
+	mutex_unlock(&chip->audio_mutex);
+	return err;
+}
+#endif
+
 static int audio_cca_module_load_ctl_get(struct snd_kcontrol *kcontrol,
 					       struct snd_ctl_elem_value *ucontrol)
 {
@@ -708,6 +744,40 @@ static int audio_cca_module_load_ctl_set(struct snd_kcontrol *kcontrol,
 	if (err < 0)
 		pr_err("ERR:%d %s CCA fail\n", err,
 		       (chip->cca_module_loaded) ? "Load" : "Unload");
+
+	mutex_unlock(&chip->audio_mutex);
+	return err;
+}
+
+static int audio_enable_cca_on_voip_ctl_get(struct snd_kcontrol *kcontrol,
+					       struct snd_ctl_elem_value *ucontrol)
+{
+	struct aoc_chip *chip = snd_kcontrol_chip(kcontrol);
+
+	if (mutex_lock_interruptible(&chip->audio_mutex))
+		return -EINTR;
+
+	ucontrol->value.integer.value[0] = chip->enable_cca_on_voip;
+
+	mutex_unlock(&chip->audio_mutex);
+
+	return 0;
+}
+
+static int audio_enable_cca_on_voip_ctl_set(struct snd_kcontrol *kcontrol,
+					       struct snd_ctl_elem_value *ucontrol)
+{
+	struct aoc_chip *chip = snd_kcontrol_chip(kcontrol);
+	int err = 0;
+
+	if (mutex_lock_interruptible(&chip->audio_mutex))
+		return -EINTR;
+
+	chip->enable_cca_on_voip = ucontrol->value.integer.value[0];
+	err = aoc_enable_cca_on_voip(chip, chip->enable_cca_on_voip);
+	if (err < 0)
+		pr_err("ERR:%d %s CCA fail\n", err,
+		       (chip->enable_cca_on_voip) ? "Enable" : "Disable");
 
 	mutex_unlock(&chip->audio_mutex);
 	return err;
@@ -1770,6 +1840,80 @@ static int aoc_audio_chirp_mode_get(struct snd_kcontrol *kcontrol,
 	return 0;
 }
 
+static int aoc_audio_chre_src_gain_get(struct snd_kcontrol *kcontrol,
+				struct snd_ctl_elem_value *ucontrol) {
+	struct aoc_chip *chip = snd_kcontrol_chip(kcontrol);
+	struct soc_mixer_control *mc = (struct soc_mixer_control *)kcontrol->private_value;
+	int chre_path = mc->shift;
+
+	if (mutex_lock_interruptible(&chip->audio_mutex))
+		return -EINTR;
+
+	ucontrol->value.integer.value[0] = chip->chre_src_gain[chre_path];
+
+	mutex_unlock(&chip->audio_mutex);
+	return 0;
+}
+
+static int aoc_audio_chre_src_gain_set(struct snd_kcontrol *kcontrol,
+				struct snd_ctl_elem_value *ucontrol)
+{
+	struct aoc_chip *chip = snd_kcontrol_chip(kcontrol);
+	struct soc_mixer_control *mc = (struct soc_mixer_control *)kcontrol->private_value;
+	int err = 0;
+
+	int chre_path = mc->shift;
+
+	if (mutex_lock_interruptible(&chip->audio_mutex))
+		return -EINTR;
+
+	chip->chre_src_gain[chre_path] = ucontrol->value.integer.value[0];
+	switch (chre_path) {
+		case CHRE_GAIN_PATH_PDM:
+			err = aoc_audio_set_chre_src_pdm_gain(chip, chip->chre_src_gain[chre_path]);
+			break;
+		case CHRE_GAIN_PATH_AEC:
+			err = aoc_audio_set_chre_src_aec_gain(chip, chip->chre_src_gain[chre_path]);
+			break;
+		default:
+			pr_err("Unknown CHRE gain path: %d", chre_path);
+			break;
+	}
+
+	mutex_unlock(&chip->audio_mutex);
+	return err;
+}
+
+static int aoc_audio_chre_src_aec_timeout_get(struct snd_kcontrol *kcontrol,
+				struct snd_ctl_elem_value *ucontrol) {
+	struct aoc_chip *chip = snd_kcontrol_chip(kcontrol);
+
+	if (mutex_lock_interruptible(&chip->audio_mutex))
+		return -EINTR;
+
+	ucontrol->value.integer.value[0] = chip->chre_src_aec_timeout;
+
+	mutex_unlock(&chip->audio_mutex);
+	return 0;
+}
+
+static int aoc_audio_chre_src_aec_timeout_set(struct snd_kcontrol *kcontrol,
+				struct snd_ctl_elem_value *ucontrol)
+{
+	struct aoc_chip *chip = snd_kcontrol_chip(kcontrol);
+	int err = 0;
+
+
+	if (mutex_lock_interruptible(&chip->audio_mutex))
+		return -EINTR;
+
+	chip->chre_src_aec_timeout = ucontrol->value.integer.value[0];
+	err = aoc_audio_set_chre_src_aec_timeout(chip, chip->chre_src_aec_timeout);
+
+	mutex_unlock(&chip->audio_mutex);
+	return err;
+}
+
 static int a2dp_encoder_parameters_put(struct snd_kcontrol *kcontrol,
 				       struct snd_ctl_elem_value *ucontrol)
 {
@@ -2073,6 +2217,10 @@ static struct snd_kcontrol_new snd_aoc_ctl[] = {
 
 	SOC_SINGLE_EXT("Audio Capture Eraser Enable", SND_SOC_NOPM, 0, 1, 0,
 		       audio_capture_eraser_enable_ctl_get, audio_capture_eraser_enable_ctl_set),
+#if ! IS_ENABLED(CONFIG_SOC_GS101)
+	SOC_SINGLE_EXT("Hotword Tap Enable", SND_SOC_NOPM, 0, 1, 0,
+		       hotword_tap_enable_ctl_get, hotword_tap_enable_ctl_set),
+#endif
 
 	SOC_ENUM_EXT("Audio Capture Mic Source", audio_capture_mic_source_enum,
 		     audio_capture_mic_source_get, audio_capture_mic_source_set),
@@ -2224,6 +2372,9 @@ static struct snd_kcontrol_new snd_aoc_ctl[] = {
 	SOC_SINGLE_EXT("CCA Module Load", SND_SOC_NOPM, 0, 1, 0,
 		       audio_cca_module_load_ctl_get, audio_cca_module_load_ctl_set),
 
+	SOC_SINGLE_EXT("Enable CCA ON VOIP", SND_SOC_NOPM, 0, 1, 0,
+		       audio_enable_cca_on_voip_ctl_get, audio_enable_cca_on_voip_ctl_set),
+
 	SOC_SINGLE_EXT("Gapless Offload Enable", SND_SOC_NOPM, 0, 1, 0,
 		       audio_gapless_offload_ctl_get, audio_gapless_offload_ctl_set),
 
@@ -2247,6 +2398,12 @@ static struct snd_kcontrol_new snd_aoc_ctl[] = {
 		0, 20, 200, 0, aoc_audio_chirp_interval_get, aoc_audio_chirp_interval_set, NULL),
 	SOC_SINGLE_RANGE_EXT_TLV_modified("AoC Chirp Mode", SND_SOC_NOPM,
 		0, 0, 10, 0, aoc_audio_chirp_mode_get, aoc_audio_chirp_mode_set, NULL),
+	SOC_SINGLE_RANGE_EXT_TLV_modified("CHRE SRC PDM Gain (cB)", SND_SOC_NOPM,
+		CHRE_GAIN_PATH_PDM, -1280, 1280, 0, aoc_audio_chre_src_gain_get, aoc_audio_chre_src_gain_set, NULL),
+	SOC_SINGLE_RANGE_EXT_TLV_modified("CHRE SRC AEC Gain (cB)", SND_SOC_NOPM,
+		CHRE_GAIN_PATH_AEC, -1280, 1280, 0, aoc_audio_chre_src_gain_get, aoc_audio_chre_src_gain_set, NULL),
+	SOC_SINGLE_RANGE_EXT_TLV_modified("CHRE SRC AEC Timeout in MSec", SND_SOC_NOPM,
+		0, 0, 60000, 0, aoc_audio_chre_src_aec_timeout_get, aoc_audio_chre_src_aec_timeout_set, NULL),
 };
 
 int snd_aoc_pdm_state(void *priv, int index)
