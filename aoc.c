@@ -293,6 +293,10 @@ static bool aoc_disable_restart = false;
 module_param(aoc_disable_restart, bool, 0644);
 MODULE_PARM_DESC(aoc_disable_restart, "Prevent AoC from restarting after crashing.");
 
+static bool aoc_debug = false;
+module_param(aoc_debug, bool, 0644);
+MODULE_PARM_DESC(aoc_debug, "Enable debug mode for AoC.");
+
 static int aoc_core_suspend(struct device *dev);
 static int aoc_core_resume(struct device *dev);
 
@@ -1628,6 +1632,8 @@ static int aoc_watchdog_restart(struct aoc_prvdata *prvdata)
 	rc = aoc_req_wait(prvdata, true);
 	if (rc) {
 		dev_err(prvdata->dev, "timed out waiting for aoc_ack\n");
+		if (aoc_debug)
+			panic("AoC kernel panic: timed out waiting for aoc_ack");
 		return rc;
 	}
 
@@ -2792,7 +2798,7 @@ static void aoc_watchdog(struct work_struct *work)
 	char crash_info[RAMDUMP_SECTION_CRASH_INFO_SIZE];
 	int restart_rc;
 	u32 section_flags;
-	bool ap_reset = false;
+	bool ap_reset = false, invalid_magic;
 
 	prvdata->total_restarts++;
 
@@ -2859,7 +2865,8 @@ static void aoc_watchdog(struct work_struct *work)
 			ramdump_header->breadcrumbs[0], ramdump_header->breadcrumbs[1]);
 	}
 
-	if (ramdump_header->valid && memcmp(ramdump_header, RAMDUMP_MAGIC, sizeof(RAMDUMP_MAGIC))) {
+	invalid_magic = memcmp(ramdump_header, RAMDUMP_MAGIC, sizeof(RAMDUMP_MAGIC));
+	if (ramdump_header->valid && invalid_magic) {
 		dev_err(prvdata->dev,
 			"aoc coredump failed: invalid magic (corruption or incompatible firmware?)\n");
 		strscpy(crash_info, "AoC Watchdog : coredump corrupt",
@@ -2886,7 +2893,7 @@ static void aoc_watchdog(struct work_struct *work)
 	}
 #endif
 
-	if (ramdump_header->valid) {
+	if (ramdump_header->valid && !invalid_magic) {
 		const char *crash_reason = (const char *)ramdump_header +
 			RAMDUMP_SECTION_CRASH_INFO_OFFSET;
 
