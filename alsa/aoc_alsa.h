@@ -425,9 +425,9 @@ int aoc_set_sink_mode(struct aoc_chip *chip, int sink, int mode);
 int aoc_set_usb_config(struct aoc_chip *chip);
 int aoc_set_usb_config_v2(struct aoc_chip *chip);
 
-int aoc_audio_write(struct aoc_alsa_stream *alsa_stream, void *src,
+int aoc_audio_write(struct aoc_alsa_stream *alsa_stream, struct iov_iter *buf,
 		    uint32_t count);
-int aoc_audio_read(struct aoc_alsa_stream *alsa_stream, void *dest,
+int aoc_audio_read(struct aoc_alsa_stream *alsa_stream, struct iov_iter *buf,
 		   uint32_t count);
 int aoc_audio_volume_set(struct aoc_chip *chip, uint32_t volume,
 			 int src, int dst);
