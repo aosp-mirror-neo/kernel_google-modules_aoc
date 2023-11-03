@@ -288,7 +288,7 @@ static struct snd_soc_dai_driver aoc_dai_drv[] = {
 			.rates = SNDRV_PCM_RATE_48000,
 			.formats = SNDRV_PCM_FMTBIT_S32_LE,
 			.channels_min = 2,
-			.channels_max = 2,
+			.channels_max = 4,
 		},
 		.name = "audio_raw",
 		.id = IDX_RAW_RX,
@@ -332,7 +332,7 @@ static struct snd_soc_dai_driver aoc_dai_drv[] = {
 			.rates = SNDRV_PCM_RATE_96000,
 			.formats = SNDRV_PCM_FMTBIT_S32_LE,
 			.channels_min = 2,
-			.channels_max = 2,
+			.channels_max = 4,
 		},
 		.name = "audio_ultrasonic",
 		.id = IDX_US_RX,
@@ -348,6 +348,20 @@ static struct snd_soc_dai_driver aoc_dai_drv[] = {
 		},
 		.name = "audio_immersive",
 		.id = IDX_IMSV_RX,
+	},
+
+	{
+		.playback = {
+			.stream_name = "audio_capture_inject",
+			.rates = SNDRV_PCM_RATE_8000_96000,
+			.formats = SNDRV_PCM_FMTBIT_S16_LE |
+					SNDRV_PCM_FMTBIT_S24_LE |
+					SNDRV_PCM_FMTBIT_S32_LE,
+			.channels_min = 1,
+			.channels_max = 4,
+		},
+		.name = "audio_capture_inject",
+		.id = IDX_CAP_INJ_RX,
 	},
 
 	{
@@ -532,6 +546,18 @@ static struct snd_soc_dai_driver aoc_dai_drv[] = {
 		},
 		.name = "audio_android_aec",
 		.id = IDX_ANDROID_AEC_TX,
+	},
+
+	{
+		.capture = {
+			.stream_name = "audio_hotword_tap",
+			.rates = SNDRV_PCM_RATE_16000,
+			.formats = SNDRV_PCM_FMTBIT_S16_LE,
+			.channels_min = 1,
+			.channels_max = 2,
+		},
+		.name = "audio_hotword_tap",
+		.id = IDX_HOTWORD_TAP_TX,
 	},
 
 	/* BE dai */
@@ -2217,7 +2243,7 @@ static const struct snd_soc_dapm_route aoc_routes[] = {
 };
 
 static int aoc_of_xlate_dai_name(struct snd_soc_component *component,
-				 const struct of_phandle_args *args,
+				 struct of_phandle_args *args,
 				 const char **dai_name)
 {
 	int i, ret = -EINVAL, head, next;

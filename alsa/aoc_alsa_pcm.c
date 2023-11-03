@@ -33,7 +33,10 @@ static void free_aoc_service_work_handler(struct work_struct *work)
 		return;
 
 	aoc_timer_stop_sync(alsa_stream);
+	atomic_set(&alsa_stream->cancel_work_active, 1);
+	audio_free_isr(alsa_stream->dev);
 	cancel_work_sync(&alsa_stream->pcm_period_work);
+	atomic_set(&alsa_stream->cancel_work_active, 0);
 
 	if (mutex_lock_interruptible(&chip->audio_mutex)) {
 		pr_err("ERR: interrupted while waiting for lock\n");
@@ -85,11 +88,16 @@ static void aoc_pcm_reset_handler(aoc_aud_service_event_t evnt, void *cookies)
 	}
 }
 
+static bool aoc_pcm_support_interrupt(uint8_t mbox_index)
+{
+	return (mbox_index == PCM_CHANNEL);
+}
 /* Timer interrupt to read the ring buffer reader/writer positions */
 void aoc_timer_start(struct aoc_alsa_stream *alsa_stream)
 {
 	ktime_t interval = ktime_set(0, alsa_stream->timer_interval_ns);
-	hrtimer_start(&(alsa_stream->hr_timer), interval, HRTIMER_MODE_REL);
+	if (alsa_stream->isr_type == TIMER)
+		hrtimer_start(&(alsa_stream->hr_timer), interval, HRTIMER_MODE_REL);
 }
 
 void aoc_timer_restart(struct aoc_alsa_stream *alsa_stream)
@@ -97,23 +105,28 @@ void aoc_timer_restart(struct aoc_alsa_stream *alsa_stream)
 	ktime_t currtime;
 	ktime_t interval = ktime_set(0, alsa_stream->timer_interval_ns);
 	currtime = ktime_get();
-	hrtimer_forward(&(alsa_stream->hr_timer), currtime, interval);
+	if (alsa_stream->isr_type == TIMER)
+		hrtimer_forward(&(alsa_stream->hr_timer), currtime, interval);
 }
 
 void aoc_timer_stop(struct aoc_alsa_stream *alsa_stream)
 {
 	int ret;
-	ret = hrtimer_cancel(&(alsa_stream->hr_timer));
-	if (ret)
-		pr_notice("The hr_timer was still in use...\n");
+	if (alsa_stream->isr_type == TIMER) {
+		ret = hrtimer_cancel(&(alsa_stream->hr_timer));
+		if (ret)
+			pr_notice("The hr_timer was still in use...\n");
+	}
 }
 
 void aoc_timer_stop_sync(struct aoc_alsa_stream *alsa_stream)
 {
 	int ret;
-	ret = hrtimer_cancel(&(alsa_stream->hr_timer));
-	if (ret)
-		pr_notice("The hr_timer was still in use...\n");
+	if (alsa_stream->isr_type == TIMER) {
+		ret = hrtimer_cancel(&(alsa_stream->hr_timer));
+		if (ret)
+			pr_notice("The hr_timer was still in use...\n");
+	}
 }
 
 /* Hardware definition
@@ -133,29 +146,16 @@ static struct snd_pcm_hardware snd_aoc_playback_hw = {
 	.channels_max = 4,
 	.buffer_bytes_max = 16384 * 6,
 	.period_bytes_min = 16,
-	.period_bytes_max = 7680,
+	.period_bytes_max = 11520,
 	.periods_min = 2,
 	.periods_max = 1024 * 6,
 };
 
-static enum hrtimer_restart aoc_pcm_hrtimer_irq_handler(struct hrtimer *timer)
+static enum hrtimer_restart aoc_pcm_irq_process(struct aoc_alsa_stream *alsa_stream)
 {
-	struct aoc_alsa_stream *alsa_stream;
 	struct aoc_service_dev *dev;
-	unsigned long consumed; /* TODO: uint64_t? */
-	int avail;
-
-	WARN_ON(!timer);
-	alsa_stream = container_of(timer, struct aoc_alsa_stream, hr_timer);
-
-	WARN_ON(!alsa_stream || !alsa_stream->substream);
-
-	if(alsa_stream->substream->runtime->status->state != SNDRV_PCM_STATE_RUNNING)
-			return HRTIMER_NORESTART;
-
-	/* Start the timer immediately for next period */
-	/* aoc_timer_start(alsa_stream); */
-	aoc_timer_restart(alsa_stream);
+	unsigned long consumed;
+	unsigned long avail;
 
 	/* The number of bytes read/writtien should be the bytes in the buffer
 	 * already played out in the case of playback. But this may not be true
@@ -163,6 +163,9 @@ static enum hrtimer_restart aoc_pcm_hrtimer_irq_handler(struct hrtimer *timer)
 	 * the playback case represents what has been read from the buffer,
 	 * not what already played out .
 	*/
+	if (alsa_stream->dev == NULL)
+		return HRTIMER_RESTART;
+
 	dev = alsa_stream->dev;
 	consumed = ((alsa_stream->substream->stream == SNDRV_PCM_STREAM_PLAYBACK) ?
 				  aoc_ring_bytes_read(dev->service, AOC_DOWN) :
@@ -200,13 +203,64 @@ static enum hrtimer_restart aoc_pcm_hrtimer_irq_handler(struct hrtimer *timer)
 		alsa_stream->pos = (consumed - alsa_stream->hw_ptr_base) % alsa_stream->buffer_size;
 	}
 
+	/* Do not queue a work if the cancel_work is active */
+	if (atomic_read(&alsa_stream->cancel_work_active) > 0)
+		return HRTIMER_RESTART;
+
 	if (!queue_work(system_highpri_wq, &alsa_stream->pcm_period_work)) {
-		pr_err("period work is busy, try to wakeup sleep thread\n");
 		wake_up(&alsa_stream->substream->runtime->sleep);
 		wake_up(&alsa_stream->substream->runtime->tsleep);
-	}
+		alsa_stream->wq_busy_count++;
+
+		if (!(alsa_stream->wq_busy_count % 5))
+			pr_warn("period work busy count = %d\n", alsa_stream->wq_busy_count);
+	} else
+		alsa_stream->wq_busy_count = 0;
 
 	return HRTIMER_RESTART;
+}
+
+static enum hrtimer_restart aoc_pcm_hrtimer_irq_handler(struct hrtimer *timer)
+{
+	struct aoc_alsa_stream *alsa_stream;
+
+	WARN_ON(!timer);
+	alsa_stream = container_of(timer, struct aoc_alsa_stream, hr_timer);
+
+	WARN_ON(!alsa_stream || !alsa_stream->substream);
+
+	if(alsa_stream->substream->runtime->status->state == SNDRV_PCM_STATE_PREPARED) {
+		aoc_timer_restart(alsa_stream);
+		return HRTIMER_RESTART;
+	} else if(alsa_stream->substream->runtime->status->state != SNDRV_PCM_STATE_RUNNING)
+		return HRTIMER_NORESTART;
+
+	/* Start the timer immediately for next period */
+	/* aoc_timer_start(alsa_stream); */
+	aoc_timer_restart(alsa_stream);
+
+	return aoc_pcm_irq_process(alsa_stream);
+}
+
+void aoc_pcm_isr(struct aoc_service_dev *dev)
+{
+	struct aoc_alsa_stream *alsa_stream;
+
+	if (!dev) {
+		pr_err("ERR: NULL aoc service pointer\n");
+		return;
+	}
+	alsa_stream = dev->prvdata;
+
+	if (alsa_stream == NULL)
+		return;
+
+	if (alsa_stream->substream == NULL) {
+		pr_err("ERR: NULL alsa_stream->substream pointer\n");
+		return;
+	}
+
+	aoc_pcm_irq_process(alsa_stream);
 }
 
 static void snd_aoc_pcm_free(struct snd_pcm_runtime *runtime)
@@ -240,7 +294,7 @@ static int snd_aoc_pcm_open(struct snd_soc_component *component,
 
 	idx = substream->pcm->device;
 	pr_debug("pcm device open (%d)\n", idx);
-	pr_debug("chip open (%d)\n", chip->opened);
+	pr_debug("chip open (%llu)\n", chip->opened);
 
 	alsa_stream = kzalloc(sizeof(struct aoc_alsa_stream), GFP_KERNEL);
 	if (alsa_stream == NULL) {
@@ -255,6 +309,8 @@ static int snd_aoc_pcm_open(struct snd_soc_component *component,
 	alsa_stream->cstream = NULL;
 	alsa_stream->idx = idx;
 	alsa_stream->stream_type = aoc_pcm_device_to_stream_type(idx);
+	alsa_stream->wq_busy_count = 0;
+	atomic_set(&alsa_stream->cancel_work_active, 0);
 
 	INIT_WORK(&alsa_stream->free_aoc_service_work, free_aoc_service_work_handler);
 	INIT_WORK(&alsa_stream->pcm_period_work, aoc_pcm_period_work_handler);
@@ -288,9 +344,15 @@ static int snd_aoc_pcm_open(struct snd_soc_component *component,
 	alsa_stream->open = 1;
 	alsa_stream->draining = 1;
 
-	alsa_stream->timer_interval_ns = PCM_TIMER_INTERVAL_NANOSECS;
-	hrtimer_init(&(alsa_stream->hr_timer), CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	alsa_stream->hr_timer.function = &aoc_pcm_hrtimer_irq_handler;
+	if (aoc_pcm_support_interrupt(alsa_stream->dev->mbox_index)) {
+		dev->prvdata = alsa_stream;
+		alsa_stream->isr_type = INTR;
+	} else {
+		alsa_stream->timer_interval_ns = PCM_TIMER_INTERVAL_NANOSECS;
+		hrtimer_init(&(alsa_stream->hr_timer), CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+		alsa_stream->hr_timer.function = &aoc_pcm_hrtimer_irq_handler;
+		alsa_stream->isr_type = TIMER;
+	}
 
 	pr_debug("rtd->pcm->nonatomic = %d\n", rtd->pcm->nonatomic);
 
@@ -329,7 +391,10 @@ static int snd_aoc_pcm_close(struct snd_soc_component *component,
 
 	pr_debug("%s: name %s substream %p", __func__, rtd->dai_link->name, substream);
 	aoc_timer_stop_sync(alsa_stream);
+	atomic_set(&alsa_stream->cancel_work_active, 1);
+	audio_free_isr(alsa_stream->dev);
 	cancel_work_sync(&alsa_stream->pcm_period_work);
+	atomic_set(&alsa_stream->cancel_work_active, 0);
 
 	if (mutex_lock_interruptible(&chip->audio_mutex)) {
 		pr_err("ERR: interrupted while waiting for lock\n");

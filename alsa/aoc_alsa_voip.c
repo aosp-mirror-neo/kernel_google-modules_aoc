@@ -37,20 +37,15 @@ static struct snd_pcm_hardware snd_aoc_playback_hw = {
 	.periods_max = 128,
 };
 
-static enum hrtimer_restart aoc_pcm_hrtimer_irq_handler(struct hrtimer *timer)
+static bool aoc_voip_support_interrupt(uint8_t mbox_index)
 {
-	struct aoc_alsa_stream *alsa_stream;
+	return (mbox_index == VOIP_CHANNEL);
+}
+
+static enum hrtimer_restart aoc_voip_irq_process(struct aoc_alsa_stream *alsa_stream)
+{
 	struct aoc_service_dev *dev;
 	unsigned long consumed; /* TODO: uint64_t? */
-
-	WARN_ON(!timer);
-	alsa_stream = container_of(timer, struct aoc_alsa_stream, hr_timer);
-
-	WARN_ON(!alsa_stream || !alsa_stream->substream);
-
-	/* Start the timer immediately for next period */
-	/* aoc_timer_start(alsa_stream); */
-	aoc_timer_restart(alsa_stream);
 
 	/* The number of bytes read/writtien should be the bytes in the buffer
 	 * already played out in the case of playback. But this may not be true
@@ -58,6 +53,9 @@ static enum hrtimer_restart aoc_pcm_hrtimer_irq_handler(struct hrtimer *timer)
 	 * the playback case represents what has been read from the buffer,
 	 * not what already played out .
 	*/
+	if (alsa_stream->dev == NULL)
+		return HRTIMER_RESTART;
+
 	dev = alsa_stream->dev;
 	consumed = ((alsa_stream->substream->stream == SNDRV_PCM_STREAM_PLAYBACK) ?
 				  aoc_ring_bytes_read(dev->service, AOC_DOWN) :
@@ -87,9 +85,59 @@ static enum hrtimer_restart aoc_pcm_hrtimer_irq_handler(struct hrtimer *timer)
 		alsa_stream->pos = (consumed - alsa_stream->hw_ptr_base) % alsa_stream->buffer_size;
 	}
 
-	schedule_work(&alsa_stream->pcm_period_work);
+	/* Do not queue a work if the cancel_work is active */
+	if (atomic_read(&alsa_stream->cancel_work_active) > 0)
+		return HRTIMER_RESTART;
+
+	if (!queue_work(system_highpri_wq, &alsa_stream->pcm_period_work)) {
+		wake_up(&alsa_stream->substream->runtime->sleep);
+		wake_up(&alsa_stream->substream->runtime->tsleep);
+		alsa_stream->wq_busy_count++;
+
+		if (!(alsa_stream->wq_busy_count % 5))
+			pr_warn("voip period work busy count = %d\n", alsa_stream->wq_busy_count);
+	} else
+		alsa_stream->wq_busy_count = 0;
 
 	return HRTIMER_RESTART;
+}
+
+static enum hrtimer_restart aoc_voip_hrtimer_irq_handler(struct hrtimer *timer)
+{
+	struct aoc_alsa_stream *alsa_stream;
+
+	WARN_ON(!timer);
+	alsa_stream = container_of(timer, struct aoc_alsa_stream, hr_timer);
+
+	WARN_ON(!alsa_stream || !alsa_stream->substream);
+
+	/* Start the timer immediately for next period */
+	/* aoc_timer_start(alsa_stream); */
+	aoc_timer_restart(alsa_stream);
+
+	return aoc_voip_irq_process(alsa_stream);
+}
+
+void aoc_voip_isr(struct aoc_service_dev *dev)
+{
+	struct aoc_alsa_stream *alsa_stream;
+
+	if (!dev) {
+		pr_err("ERR: NULL aoc service pointer\n");
+		return;
+	}
+
+	alsa_stream = dev->prvdata;
+
+	if (alsa_stream == NULL)
+		return;
+
+	if (alsa_stream->substream == NULL) {
+		pr_err("ERR: NULL alsa_stream->substream pointer\n");
+		return;
+	}
+
+	aoc_voip_irq_process(alsa_stream);
 }
 
 static void snd_aoc_pcm_free(struct snd_pcm_runtime *runtime)
@@ -122,7 +170,7 @@ static int snd_aoc_pcm_open(struct snd_soc_component *component,
 
 	idx = substream->pcm->device;
 	dev_dbg(component->dev, "pcm device open (%d)\n", idx);
-	dev_dbg(component->dev, "chip open (%d)\n", chip->opened);
+	dev_dbg(component->dev, "chip open (%llu)\n", chip->opened);
 
 	/* Find the corresponding aoc audio service */
 	err = alloc_aoc_audio_service(rtd->dai_link->name, &dev, NULL, NULL);
@@ -146,6 +194,9 @@ static int snd_aoc_pcm_open(struct snd_soc_component *component,
 	alsa_stream->cstream = NULL;
 	alsa_stream->dev = dev;
 	alsa_stream->idx = idx;
+	alsa_stream->wq_busy_count = 0;
+	atomic_set(&alsa_stream->cancel_work_active, 0);
+
 	INIT_WORK(&alsa_stream->pcm_period_work, aoc_pcm_period_work_handler);
 
 	/* Ring buffer will be flushed at prepare() before playback/capture */
@@ -168,9 +219,15 @@ static int snd_aoc_pcm_open(struct snd_soc_component *component,
 	alsa_stream->open = 1;
 	alsa_stream->draining = 1;
 
-	alsa_stream->timer_interval_ns = PCM_TIMER_INTERVAL_NANOSECS;
-	hrtimer_init(&(alsa_stream->hr_timer), CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	alsa_stream->hr_timer.function = &aoc_pcm_hrtimer_irq_handler;
+	if (aoc_voip_support_interrupt(alsa_stream->dev->mbox_index)) {
+		dev->prvdata = alsa_stream;
+		alsa_stream->isr_type = INTR;
+	} else {
+		alsa_stream->timer_interval_ns = PCM_TIMER_INTERVAL_NANOSECS;
+		hrtimer_init(&(alsa_stream->hr_timer), CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+		alsa_stream->hr_timer.function = &aoc_voip_hrtimer_irq_handler;
+		alsa_stream->isr_type = TIMER;
+	}
 
 	/* TODO: refactor needed on mapping between device number and entrypoint */
 	alsa_stream->entry_point_idx = (idx == 7) ? HAPTICS : idx;
@@ -201,7 +258,10 @@ static int snd_aoc_pcm_close(struct snd_soc_component *component,
 
 	dev_dbg(component->dev, "name %s substream %pK", rtd->dai_link->name, substream);
 	aoc_timer_stop_sync(alsa_stream);
+	atomic_set(&alsa_stream->cancel_work_active, 1);
+	audio_free_isr(alsa_stream->dev);
 	cancel_work_sync(&alsa_stream->pcm_period_work);
+	atomic_set(&alsa_stream->cancel_work_active, 0);
 
 	if (mutex_lock_interruptible(&chip->audio_mutex)) {
 		dev_err(component->dev, "ERR: interrupted while waiting for lock\n");
