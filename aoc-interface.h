@@ -16,4 +16,3 @@
 #else
   #error "Unsupported platform!"
 #endif
-

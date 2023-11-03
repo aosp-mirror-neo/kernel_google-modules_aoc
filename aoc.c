@@ -2131,7 +2131,7 @@ static void aoc_configure_sysmmu(struct aoc_prvdata *p)
 
 	/* Map in the xhci_dma carveout */
 	if (iommu_map(domain, 0x9B000000, 0x97000000, SZ_4M,
-		      IOMMU_READ | IOMMU_WRITE))
+		      IOMMU_READ | IOMMU_WRITE, GFP_KERNEL))
 		dev_err(dev, "mapping xhci_dma carveout failed\n");
 
 	/* Map in USB for low power audio */
