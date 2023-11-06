@@ -39,7 +39,7 @@ static int aoc_audio_sink[] = {
 	[PORT_BT_RX] = SINK_BT,           [PORT_BT_TX] = -1,
 	[PORT_INCALL_RX] = -1,            [PORT_INCALL_TX] = -1,
 	[PORT_INTERNAL_MIC] = -1,	  [PORT_HAPTIC_RX] = SINK_SPEAKER,
-	[PORT_INTERNAL_MIC_US] = -1,
+	[PORT_INTERNAL_MIC_US] = -1,      [PORT_DP_DMA_RX] = SINK_USB,
 };
 
 static int hw_id_to_sink(int hw_idx)
@@ -2430,6 +2430,59 @@ int aoc_compr_offload_linear_gain_set(struct aoc_chip *chip, long *val)
 	return 0;
 }
 
+int aoc_mel_enable(struct aoc_chip *chip, int enable)
+{
+	int err = 0;
+	struct CMD_AUDIO_OUTPUT_MEL_STATE cmd;
+
+	AocCmdHdrSet(&(cmd.parent), CMD_AUDIO_OUTPUT_MEL_STATE_ID, sizeof(cmd));
+
+	cmd.enable = enable ? true : false;
+
+	err = aoc_audio_control(CMD_OUTPUT_CHANNEL, (uint8_t *)&cmd, sizeof(cmd), (uint8_t *)&cmd,
+		chip);
+	if (err < 0)
+		pr_err("ERR:%d in mel enable\n", err);
+
+	return err;
+}
+
+int aoc_mel_rs2_set(struct aoc_chip *chip, long *rs2)
+{
+	int err = 0;
+	struct CMD_AUDIO_OUTPUT_MEL_RS2 cmd;
+	uint32_t tmp;
+
+	AocCmdHdrSet(&(cmd.parent), CMD_AUDIO_OUTPUT_MEL_SET_RS2_ID, sizeof(cmd));
+
+	tmp = (uint32_t)rs2[0];
+	cmd.rs2_value = *(float *)(&tmp);
+
+	err = aoc_audio_control(CMD_OUTPUT_CHANNEL, (uint8_t *)&cmd, sizeof(cmd), (uint8_t *)&cmd,
+		chip);
+	if (err < 0)
+		pr_err("ERR:%d in mel rs2 set\n", err);
+
+	return err;
+}
+
+int aoc_mel_rs2_get(struct aoc_chip *chip, long *rs2)
+{
+	int err = 0;
+	struct CMD_AUDIO_OUTPUT_MEL_RS2 cmd;
+
+	AocCmdHdrSet(&(cmd.parent), CMD_AUDIO_OUTPUT_MEL_GET_RS2_ID, sizeof(cmd));
+
+	err = aoc_audio_control(CMD_OUTPUT_CHANNEL, (uint8_t *)&cmd, sizeof(cmd), (uint8_t *)&cmd,
+		chip);
+	if (err < 0)
+		pr_err("ERR:%d in mel rs2 get\n", err);
+	else
+		*rs2 = *(uint32_t *)&cmd.rs2_value;
+
+	return err;
+}
+
 int aoc_sidetone_enable(struct aoc_chip *chip, int enable)
 {
 	int err = 0;
@@ -2856,6 +2909,124 @@ int aoc_audio_write(struct aoc_alsa_stream *alsa_stream, void *src,
 
 out:
 	return err < 0 ? err : 0;
+}
+
+int aoc_displayport_service_alloc(struct aoc_chip *chip)
+{
+	struct aoc_service_dev *dev;
+	int err = 0;
+	if (!chip)
+		return -ENODEV;
+	if (mutex_lock_interruptible(&chip->audio_cmd_chan_mutex))
+		return -EINTR;
+
+	err = alloc_aoc_audio_service(AOC_DISPLAYPORT_SERVICE, &dev, NULL, NULL);
+	if (err < 0)
+		goto error;
+
+	chip->dp_starting = 0;
+	chip->dp_dev = dev;
+error:
+	mutex_unlock(&chip->audio_cmd_chan_mutex);
+	return err;
+}
+
+int aoc_displayport_service_free(struct aoc_chip *chip)
+{
+	struct aoc_service_dev *dev;
+	if (!chip)
+		return -ENODEV;
+	if (mutex_lock_interruptible(&chip->audio_cmd_chan_mutex))
+		return -EINTR;
+
+	chip->dp_starting = 0;
+	dev = chip->dp_dev;
+	chip->dp_dev = NULL;
+	if (dev)
+		free_aoc_audio_service(AOC_DISPLAYPORT_SERVICE, dev);
+	mutex_unlock(&chip->audio_cmd_chan_mutex);
+	return 0;
+}
+
+int aoc_displayport_flush(struct aoc_chip *chip)
+{
+	struct aoc_service_dev *dev;
+	int err = 0;
+
+	if (!chip)
+		return -ENODEV;
+
+	dev = chip->dp_dev;
+
+	if (!dev)
+		return -EINVAL;
+
+	if (!aoc_ring_flush_read_data(dev->service, AOC_UP, 0)) {
+		dev_err(&dev->dev, "flush dp data failed\n");
+	}
+
+	return err;
+}
+
+int aoc_displayport_read(struct aoc_chip *chip, void *dest, size_t buf_size)
+{
+	struct aoc_service_dev *dev;
+	int err = 0;
+	size_t avail;
+
+	if (!chip || !dest)
+		return -ENODEV;
+
+	dev = chip->dp_dev;
+
+	if (!dev)
+		return -EINVAL;
+
+	memset(dest, 0, buf_size);
+
+	avail = aoc_ring_bytes_available_to_read(dev->service, AOC_UP);
+
+	if (avail == 0) {
+		dev_err(&dev->dev, "ERR: no data in diaplayport read\n");
+		err = -EINVAL;
+		goto done;
+	}
+	if (chip->dp_starting == 0) {
+		if (chip->dp_start_threshold == 0) {
+			dev_warn(&dev->dev, "use default start threshold\n");
+			chip->dp_start_threshold = buf_size * 2;
+		}
+		if (avail < chip->dp_start_threshold) {
+			dev_warn(&dev->dev,
+				"Wait more dp buffer to start. avail = %zu, threshold = %zu\n",
+				avail, chip->dp_start_threshold);
+			err = -EAGAIN;
+			goto done;
+		}
+		chip->dp_starting = 1;
+	}
+
+	if (unlikely(avail < buf_size)) {
+		dev_err(&dev->dev, "ERR: overrun in displayport read. avail = %zu, toread = %zu\n",
+		       avail, buf_size);
+		err = -EAGAIN;
+		goto done;
+	}
+
+	/* Only read bytes available in the ring buffer */
+	avail = min(avail, buf_size);
+	if (!avail)
+		goto done;
+
+	err = aoc_service_read(dev, (void *)dest, avail, NONBLOCKING);
+	if (unlikely(err != avail)) {
+		dev_err(&dev->dev, "ERR: %zu bytes not read from ring buffer\n",
+		       avail - err);
+		err = -EFAULT;
+	}
+
+done:
+	return err;
 }
 
 /* PCM channel setup ??? */
@@ -3528,8 +3699,7 @@ int aoc_compr_offload_setup(struct aoc_alsa_stream *alsa_stream, int type)
 		sizeof(cmd));
 
 	/* TODO: HAL only passes MP3 or AAC, need to consider/test other AAC options */
-	cmd.cfg.format = (type == SND_AUDIOCODEC_MP3) ? AUDIO_OUTPUT_DECODER_MP3 :
-							AUDIO_OUTPUT_DECODER_AAC_LC;
+	cmd.cfg.format = type;
 	cmd.cfg.samplerate = alsa_stream->params_rate;
 	cmd.cfg.channels = alsa_stream->channels;
 	cmd.address = 0;
