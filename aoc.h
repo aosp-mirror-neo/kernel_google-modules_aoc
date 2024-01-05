@@ -9,6 +9,9 @@
  * published by the Free Software Foundation.
  */
 
+#ifndef AOC_H
+#define AOC_H
+
 #include <linux/cdev.h>
 #include <linux/delay.h>
 #include <linux/device.h>
@@ -351,3 +354,4 @@ enum AOC_FIRMWARE_INFORMATION {
 	module_driver(__aoc_driver, aoc_driver_register, aoc_driver_unregister)
 
 #endif /* __KERNEL__ */
+#endif /* AOC_H */
