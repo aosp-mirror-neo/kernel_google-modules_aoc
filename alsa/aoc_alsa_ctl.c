@@ -10,6 +10,7 @@
  */
 
 #include "aoc_alsa.h"
+#include "audiometrics.h"
 
 /* Volume maximum and minimum */
 #define CTRL_VOL_MIN 0

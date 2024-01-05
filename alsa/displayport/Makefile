@@ -3,15 +3,12 @@
 KERNEL_SRC ?= /lib/modules/$(shell uname -r)/build
 M ?= $(shell pwd)
 
-KBUILD_OPTIONS	+= CONFIG_AOC_DRIVER=m
+KBUILD_OPTIONS	+= CONFIG_AOC_DP=m
 
+EXTRA_CFLAGS	+= -I$(KERNEL_SRC)/../private/google-modules/display/samsung/displayport/dp_audio
+EXTRA_SYMBOLS	+= $(OUT_DIR)/../private/google-modules/display/samsung/displayport/Module.symvers
 EXTRA_SYMBOLS	+= $(OUT_DIR)/../private/google-modules/aoc/Module.symvers
-EXTRA_SYMBOLS	+= $(OUT_DIR)/../private/google-modules/amplifiers/audiometrics/Module.symvers
-
-ifneq ($(wildcard $(OUT_DIR)/../private/google-modules/radio/samsung/*/Module.symvers),)
-EXTRA_SYMBOLS	+= $(OUT_DIR)/../private/google-modules/radio/samsung/*/Module.symvers
-endif
-
+EXTRA_SYMBOLS	+= $(OUT_DIR)/../private/google-modules/aoc/alsa/Module.symvers
 
 include $(KERNEL_SRC)/../private/google-modules/soc/gs/Makefile.include
 

@@ -34,7 +34,6 @@
 #include "../aoc-interface.h"
 #include "google-aoc-enum.h"
 #include "usbaudio.h"
-#include "audiometrics.h"
 
 #define AOC_SND_CARD "aoc-snd-card"
 #define ALSA_AOC_CMD "alsa-aoc"
@@ -47,7 +46,6 @@
 #define AOC_MMAP_CAPTURE_SERVICE "audio_capture1"
 #define AOC_COMPR_OFFLOAD_SERVICE "audio_playback6"
 #define AOC_COMPR_OFFLOAD_EOF_SERVICE "decoder_eof"
-#define AOC_DISPLAYPORT_SERVICE "audio_displayport"
 
 enum uc_device_id {
 	UC_AUDIO_RECORD = 8,
@@ -520,12 +518,6 @@ int aoc_audio_read(struct aoc_alsa_stream *alsa_stream, struct iov_iter *buf,
 		   uint32_t count);
 int aoc_audio_volume_set(struct aoc_chip *chip, uint32_t volume,
 			 int src, int dst);
-int aoc_displayport_read(struct aoc_chip *chip, void *dest,
-			 size_t buf_size);
-int aoc_displayport_flush(struct aoc_chip *chip);
-int aoc_displayport_service_alloc(struct aoc_chip *chip);
-int aoc_displayport_service_free(struct aoc_chip *chip);
-
 int aoc_audio_set_chirp_parameter(struct aoc_chip *chip, int key, int value);
 
 int aoc_audio_set_chre_src_pdm_gain(struct aoc_chip *chip, int gain);
@@ -575,8 +567,6 @@ int aoc_voip_init(void);
 void aoc_voip_exit(void);
 int aoc_usb_init(void);
 void aoc_usb_exit(void);
-int aoc_dp_init(void);
-void aoc_dp_exit(void);
 int aoc_audio_mic_mask_set(struct aoc_chip *chip, bool is_voice);
 
 int aoc_audio_us_record(struct aoc_chip *chip, bool enable);
