@@ -951,7 +951,8 @@ static ssize_t reset_store(struct device *dev, struct device_attribute *attr,
 		dev_err(dev, "Reset request rejected, option disabled via persist options");
 	} else {
 		configure_crash_interrupts(prvdata, false);
-		strlcpy(prvdata->ap_reset_reason, reason_str, AP_RESET_REASON_LENGTH);
+		strscpy(prvdata->ap_reset_reason, reason_str,
+			sizeof(prvdata->ap_reset_reason));
 		prvdata->ap_triggered_reset = true;
 		schedule_work(&prvdata->watchdog_work);
 	}
@@ -974,7 +975,8 @@ static ssize_t force_reload_store(struct device *dev, struct device_attribute *a
 	if (aoc_state != AOC_STATE_OFFLINE)
 		disable_irq_nosync(prvdata->watchdog_irq);
 
-	strlcpy(prvdata->ap_reset_reason, "Force Reload AoC", AP_RESET_REASON_LENGTH);
+	strscpy(prvdata->ap_reset_reason, "Force Reload AoC",
+		sizeof(prvdata->ap_reset_reason));
 	prvdata->ap_triggered_reset = true;
 
 	schedule_work(&prvdata->watchdog_work);
@@ -1317,7 +1319,8 @@ static void aoc_monitor_online(struct work_struct *work)
 			return;
 
 		disable_irq_nosync(prvdata->watchdog_irq);
-		strlcpy(prvdata->ap_reset_reason, "Monitor Reset", AP_RESET_REASON_LENGTH);
+		strscpy(prvdata->ap_reset_reason, "Monitor Reset",
+			sizeof(prvdata->ap_reset_reason));
 		prvdata->ap_triggered_reset = true;
 		schedule_work(&prvdata->watchdog_work);
 	}
