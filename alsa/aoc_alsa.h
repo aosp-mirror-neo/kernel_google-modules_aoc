@@ -508,7 +508,9 @@ int aoc_set_usb_feedback_endpoint(struct aoc_chip *chip, struct usb_device *udev
 		    struct usb_host_endpoint *ep);
 int aoc_set_usb_offload_state(struct aoc_chip *chip, bool offload_enable);
 
-int aoc_set_usb_mem_config(struct aoc_chip *achip);
+#if !IS_ENABLED(CONFIG_AOC_USB)
+static inline int aoc_set_usb_mem_config(struct aoc_chip *achip) { return 0; }
+#endif
 
 int aoc_multichannel_processor_switch_set(struct aoc_chip *achip, int value);
 
@@ -565,7 +567,6 @@ int aoc_incall_init(void);
 void aoc_incall_exit(void);
 int aoc_voip_init(void);
 void aoc_voip_exit(void);
-int aoc_usb_init(void);
 void aoc_usb_exit(void);
 int aoc_audio_mic_mask_set(struct aoc_chip *chip, bool is_voice);
 
