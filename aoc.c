@@ -1040,7 +1040,7 @@ static struct attribute *aoc_attrs[] = {
 ATTRIBUTE_GROUPS(aoc);
 
 static int aoc_platform_probe(struct platform_device *dev);
-static int aoc_platform_remove(struct platform_device *dev);
+static void aoc_platform_remove(struct platform_device *dev);
 static void aoc_platform_shutdown(struct platform_device *dev);
 
 static const struct of_device_id aoc_match[] = {
@@ -2702,7 +2702,7 @@ err_platform_not_null:
 	return rc;
 }
 
-static int aoc_platform_remove(struct platform_device *pdev)
+static void aoc_platform_remove(struct platform_device *pdev)
 {
 	struct aoc_prvdata *prvdata;
 	int i;
@@ -2723,7 +2723,6 @@ static int aoc_platform_remove(struct platform_device *pdev)
 	platform_set_drvdata(pdev, NULL);
 	aoc_platform_device = NULL;
 
-	return 0;
 }
 
 static void sscd_release(struct device *dev)
