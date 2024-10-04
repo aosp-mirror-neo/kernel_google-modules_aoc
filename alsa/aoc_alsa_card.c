@@ -1024,7 +1024,6 @@ static int of_parse_dai_platform(struct device *dev,
 {
 	struct device_node *of_platform_root = NULL;
 	struct device_node *of_node;
-	struct device_node *np;
 	int count, ret = 0;
 	struct snd_soc_dai_link_component *component;
 
@@ -1054,7 +1053,7 @@ static int of_parse_dai_platform(struct device *dev,
 	dai->num_platforms = count;
 
 	count = 0;
-	for_each_available_child_of_node(of_platform_root, np) {
+	for_each_available_child_of_node_scoped(of_platform_root, np) {
 		of_node = of_parse_phandle(np, "of_drv", 0);
 		if (!of_node) {
 			pr_err("%s: no of_drv for %s", __func__,
@@ -1245,7 +1244,6 @@ static int aoc_of_parse_dai_link(struct device_node *node,
 {
 	int ret = 0, count;
 	struct device_node *np_dai;
-	struct device_node *np = NULL;
 	struct device *dev = card->dev;
 	struct snd_soc_dai_link *dai_link;
 
@@ -1274,7 +1272,7 @@ static int aoc_of_parse_dai_link(struct device_node *node,
 	card->dai_link = dai_link;
 
 	count = 0;
-	for_each_available_child_of_node (np_dai, np) {
+	for_each_available_child_of_node_scoped(np_dai, np) {
 		if (count >= card->num_links) {
 			pr_err("%s: dai link num is full %u", __func__, count);
 			break;
@@ -1355,7 +1353,6 @@ static int aoc_of_parse_codec_conf(struct device_node *node,
 {
 	int ret = 0, count;
 	struct device_node *np_cfg;
-	struct device_node *np = NULL;
 	struct snd_soc_codec_conf *codec_cfg;
 	struct device *dev = card->dev;
 
@@ -1384,7 +1381,7 @@ static int aoc_of_parse_codec_conf(struct device_node *node,
 	card->codec_conf = codec_cfg;
 
 	count = 0;
-	for_each_available_child_of_node (np_cfg, np) {
+	for_each_available_child_of_node_scoped(np_cfg, np) {
 		if (count >= card->num_configs) {
 			pr_err("%s: conf num is full %u", __func__, count);
 			break;
@@ -1451,7 +1448,6 @@ static int aoc_of_parse_clk(struct device_node *np_clk,
 	struct snd_soc_card *card, u32 *clk_num, struct clk_ctrl **clks)
 {
 	struct device *dev = card->dev;
-	struct device_node *np;
 	struct clk_ctrl *cur;
 	int count, ret = 0, i;
 	const char *clk_type = NULL;
@@ -1473,7 +1469,7 @@ static int aoc_of_parse_clk(struct device_node *np_clk,
 
 	cur = *clks;
 
-	for_each_available_child_of_node(np_clk, np) {
+	for_each_available_child_of_node_scoped(np_clk, np) {
 		if (*clk_num >= count) {
 			pr_err("%s: %s clk number overflow %d %d\n",
 				__func__, np->name, *clk_num, count);
