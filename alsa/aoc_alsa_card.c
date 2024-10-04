@@ -9,6 +9,7 @@
  * published by the Free Software Foundation.
  */
 
+#include <linux/cleanup.h>
 #include <linux/platform_device.h>
 
 #include <linux/init.h>
@@ -1076,7 +1077,8 @@ exit:
 static int of_parse_dai_cpu(struct device *dev,
 	struct device_node *node, struct snd_soc_dai_link *dai)
 {
-	struct device_node *of_cpu_root = NULL, *of_node;
+	struct device_node *of_cpu_root __free(device_node);
+	struct device_node *of_node __free(device_node) = NULL;
 	struct snd_soc_dai_link_component *component;
 	int ret;
 
@@ -1092,21 +1094,18 @@ static int of_parse_dai_cpu(struct device *dev,
 	of_node = of_parse_phandle(of_cpu_root, "sound-dai", 0);
 	if (!of_node) {
 		pr_err("%s: fail to get cpu dai for %s", __func__, dai->name);
-		ret = -EINVAL;
-		goto exit;
+		return -EINVAL;
 	}
 
 	component = devm_kzalloc(dev,
 		sizeof(struct snd_soc_dai_link_component), GFP_KERNEL);
-	if (!component) {
-		ret = -ENOMEM;
-		goto exit;
-	}
+	if (!component)
+		return -ENOMEM;
 
 	/* Only support single cpu dai */
 	dai->cpus = component;
 	dai->num_cpus = 1;
-	component->of_node = of_node;
+	component->of_node = no_free_ptr(of_node);
 
 	ret = snd_soc_of_get_dai_name(of_cpu_root, &component->dai_name, 0);
 	if (ret) {
@@ -1118,9 +1117,6 @@ static int of_parse_dai_cpu(struct device *dev,
 		}
 	}
 
-exit:
-	if (of_cpu_root)
-		of_node_put(of_cpu_root);
 	return ret;
 }
 
@@ -1577,6 +1573,8 @@ static int aoc_of_parse_clk(struct device_node *np_clk,
 	return 0;
 
 err_exit:
+	for (i = 0; i < count; ++i)
+		of_node_put(clks[i]->np);
 	*clk_num = 0;
 	devm_kfree(dev, *clks);
 	*clks = NULL;
