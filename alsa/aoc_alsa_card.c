@@ -1410,7 +1410,7 @@ err:
 static int aoc_of_parse_hs_jack(struct device_node *node,
 	struct snd_card_pdata *pdata)
 {
-	struct device_node *np_cfg;
+	struct device_node *np_cfg __free(device_node);
 	int ret;
 
 	np_cfg = of_get_child_by_name(node, "hs_jack");
@@ -1423,21 +1423,17 @@ static int aoc_of_parse_hs_jack(struct device_node *node,
 						0, &pdata->jack_be_id);
 	if (ret != 0) {
 		pr_err("%s: fail to parse id %d\n", __func__, ret);
-		goto err_exit;
+		return ret;
 	}
 
 	pdata->jack_np = of_parse_phandle(np_cfg, "codec", 0);
 	if (!pdata->jack_np) {
 		pr_err("%s: fail to codec np\n", __func__);
-		goto err_exit;
+		return 0;
 	}
 
 	pdata->has_jack = true;
 	return 0;
-
-err_exit:
-	of_node_put(np_cfg);
-	return ret;
 }
 
 static int aoc_of_parse_hac_amp(struct device_node *node,
