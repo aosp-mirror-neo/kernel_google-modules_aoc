@@ -6,6 +6,7 @@
  *
  */
 
+#include <linux/dma-mapping.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/version.h>
@@ -55,7 +56,8 @@ static enum hrtimer_restart aoc_incall_hifi_irq_process(struct aoc_alsa_stream *
 	 * the playback case represents what has been read from the buffer,
 	 * not what already played out .
 	*/
-	if (alsa_stream->dev == NULL)
+	if (alsa_stream->dev == NULL ||
+		 alsa_stream->substream->runtime->status->state != SNDRV_PCM_STATE_RUNNING)
 		return HRTIMER_RESTART;
 
 	dev = alsa_stream->dev;
@@ -240,8 +242,14 @@ static int snd_aoc_pcm_open(struct snd_soc_component *component,
 
 	/* TODO: refactor needed on mapping between device number and entrypoint */
 	alsa_stream->entry_point_idx = (idx == 7) ? HAPTICS : idx;
+
+	/* reuse incall_capture 0 on tablet for voip path.
+	 * and using new incall capture 3 for phone platform. */
 	if (rtd->dai_link->id == IDX_INCALL_CAP0_TX &&
 		chip->incall_capture_state[0] == INCALL_CAPTURE_3MIC) {
+		alsa_stream->reused_for_voip = true;
+	} else if (rtd->dai_link->id == IDX_INCALL_CAP3_TX &&
+		chip->incall_capture_state[3] == INCALL_CAPTURE_3MIC) {
 		alsa_stream->reused_for_voip = true;
 	}
 	mutex_unlock(&chip->audio_mutex);
@@ -348,6 +356,7 @@ static long get_wait_time(struct snd_pcm_substream *substream)
 	case IDX_INCALL_CAP0_TX:
 	case IDX_INCALL_CAP1_TX:
 	case IDX_INCALL_CAP2_TX:
+	case IDX_INCALL_CAP3_TX:
 		return msecs_to_jiffies(chip->voice_pcm_wait_time_in_ms);
 	default:
 		return msecs_to_jiffies(chip->pcm_wait_time_in_ms);
@@ -398,11 +407,24 @@ static int snd_aoc_pcm_prepare(struct snd_soc_component *component,
 	struct aoc_service_dev *dev = alsa_stream->dev;
 	struct aoc_chip *chip = alsa_stream->chip;
 	int channels;
+#if !IS_ENABLED(CONFIG_SOC_GS101)
+	int err;
+#endif
 
 	aoc_timer_stop_sync(alsa_stream);
 
 	if (mutex_lock_interruptible(&chip->audio_mutex))
 		return -EINTR;
+
+	alsa_stream->buffer_size = snd_pcm_lib_buffer_bytes(substream);
+	alsa_stream->period_size = snd_pcm_lib_period_bytes(substream);
+
+#if !IS_ENABLED(CONFIG_SOC_GS101)
+	/* Set the audio formats and flush the DRAM buffer */
+	err = aoc_hifi_incall_set_params(alsa_stream);
+	if (err < 0)
+		pr_notice("Failed to set %d Hifi/Incall params\n", err);
+#endif
 
 	channels = alsa_stream->channels;
 
@@ -414,8 +436,6 @@ static int snd_aoc_pcm_prepare(struct snd_soc_component *component,
 
 	/* in preparation of the stream */
 	/* aoc_audio_set_ctls(alsa_stream->chip); */
-	alsa_stream->buffer_size = snd_pcm_lib_buffer_bytes(substream);
-	alsa_stream->period_size = snd_pcm_lib_period_bytes(substream);
 	alsa_stream->pos = 0;
 	alsa_stream->prev_pos = 0;
 	alsa_stream->pos_delta = 0;
@@ -571,6 +591,9 @@ static int snd_aoc_pcm_lib_ioctl(struct snd_soc_component *component,
 static int aoc_pcm_new(struct snd_soc_component *component, struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_pcm_substream *substream = NULL;
+
+	dma_set_mask_and_coherent(component->dev, DMA_BIT_MASK(64));
+
 	/* Allocate DMA memory */
 	if (rtd->dai_link->dpcm_playback) {
 		substream = rtd->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream;

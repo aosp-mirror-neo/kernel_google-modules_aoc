@@ -3,6 +3,7 @@
  * Google Whitechapel AoC ALSA Driver on PCM
  * Copyright (c) 2020 Google LLC
  */
+#include <linux/dma-mapping.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/version.h>
@@ -87,6 +88,8 @@ static int aoc_nohost_new(struct snd_soc_component *component,
 {
 	struct snd_pcm_substream *substream = NULL;
 
+	dma_set_mask_and_coherent(component->dev, DMA_BIT_MASK(64));
+
 	/* Allocate DMA memory */
 	if (rtd->dai_link->dpcm_playback) {
 		substream =
@@ -106,6 +109,7 @@ static int aoc_nohost_new(struct snd_soc_component *component,
 			snd_aoc_nohost_hw.buffer_bytes_max,
 			snd_aoc_nohost_hw.buffer_bytes_max);
 	}
+	rtd->pcm->nonatomic = true;
 	return 0;
 }
 

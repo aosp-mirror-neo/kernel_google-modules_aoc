@@ -6,6 +6,7 @@
  *
  */
 
+#include <linux/dma-mapping.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/version.h>
@@ -54,7 +55,8 @@ static enum hrtimer_restart aoc_voip_irq_process(struct aoc_alsa_stream *alsa_st
 	 * the playback case represents what has been read from the buffer,
 	 * not what already played out .
 	*/
-	if (alsa_stream->dev == NULL)
+	if (alsa_stream->dev == NULL ||
+		 alsa_stream->substream->runtime->status->state != SNDRV_PCM_STATE_RUNNING)
 		return HRTIMER_RESTART;
 
 	dev = alsa_stream->dev;
@@ -377,6 +379,16 @@ static int snd_aoc_pcm_prepare(struct snd_soc_component *component,
 	if (mutex_lock_interruptible(&chip->audio_mutex))
 		return -EINTR;
 
+	alsa_stream->buffer_size = snd_pcm_lib_buffer_bytes(substream);
+	alsa_stream->period_size = snd_pcm_lib_period_bytes(substream);
+
+#if !IS_ENABLED(CONFIG_SOC_GS101)
+	/* Set the audio formats and flush the DRAM buffer */
+	err = aoc_voip_set_params(alsa_stream);
+	if (err < 0)
+		pr_notice("Failed to set %d VoIP Rx params\n", err);
+#endif
+
 	channels = alsa_stream->channels;
 
 	pr_debug("channels = %d, rate = %d, bits = %d, float-fmt = %d\n",
@@ -552,6 +564,9 @@ static int snd_aoc_pcm_lib_ioctl(struct snd_soc_component *component,
 static int aoc_pcm_new(struct snd_soc_component *component, struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_pcm_substream *substream = NULL;
+
+	dma_set_mask_and_coherent(component->dev, DMA_BIT_MASK(64));
+
 	/* Allocate DMA memory */
 	if (rtd->dai_link->dpcm_playback) {
 		substream = rtd->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream;

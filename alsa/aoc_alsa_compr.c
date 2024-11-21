@@ -50,12 +50,6 @@ static void aoc_compr_reset_pointer(struct aoc_alsa_stream *alsa_stream)
 	struct snd_compr_stream *cstream = alsa_stream->cstream;
 	struct aoc_service_dev *dev = alsa_stream->dev;
 
-	if (aoc_compr_offload_get_io_samples(alsa_stream,
-		&alsa_stream->compr_pcm_io_sample_base) < 0) {
-		pr_err("ERR: fail to get audio playback samples\n");
-		return;
-	}
-
 	alsa_stream->hw_ptr_base = (cstream->direction == SND_COMPRESS_PLAYBACK) ?
 						 aoc_ring_bytes_read(dev->service, AOC_DOWN) :
 						 aoc_ring_bytes_written(dev->service, AOC_UP);
@@ -66,6 +60,21 @@ static void aoc_compr_reset_pointer(struct aoc_alsa_stream *alsa_stream)
 	pr_debug("%s hw_ptr_base = %lu compr_pcm_io_sample_base = %llu\n",
 		__func__, alsa_stream->hw_ptr_base, alsa_stream->compr_pcm_io_sample_base);
 
+}
+
+int aoc_compr_offload_reset_io_sample_base(struct aoc_alsa_stream *alsa_stream)
+{
+	int err = 0;
+
+	err = aoc_compr_offload_get_io_samples(alsa_stream,
+		&alsa_stream->compr_pcm_io_sample_base);
+	if (err < 0) {
+		pr_err("ERR: fail to get audio playback samples, err = %d\n", err);
+		return err;
+	}
+	pr_info("%s: compr_pcm_io_sample_base = %llu\n",
+		__func__, alsa_stream->compr_pcm_io_sample_base);
+	return err;
 }
 
 void aoc_compr_offload_isr(struct aoc_service_dev *dev)
@@ -231,12 +240,6 @@ static int aoc_compr_prepare(struct aoc_alsa_stream *alsa_stream)
 		return -EFAULT;
 	}
 
-	if (aoc_compr_offload_get_io_samples(alsa_stream,
-				&alsa_stream->compr_pcm_io_sample_base) < 0) {
-		pr_err("ERR: fail to get audio playback samples\n");
-		return -EFAULT;
-	}
-
 	alsa_stream->hw_ptr_base = (cstream->direction == SND_COMPRESS_PLAYBACK) ?
 						 aoc_ring_bytes_read(dev->service, AOC_DOWN) :
 						 aoc_ring_bytes_written(dev->service, AOC_UP);
@@ -340,6 +343,7 @@ static int aoc_compr_playback_open(struct snd_compr_stream *cstream)
 	alsa_stream->send_metadata = 1;
 	alsa_stream->eof_reach = 0;
 	alsa_stream->gapless_offload_enable = chip->gapless_offload_enable;
+	snd_compr_use_pause_in_draining(cstream);
 
 	err = aoc_audio_open(alsa_stream);
 	if (err != 0) {
@@ -371,6 +375,7 @@ static int aoc_compr_playback_open(struct snd_compr_stream *cstream)
 	/* TODO: temporary compr offload volume set to protect speaker*/
 	aoc_audio_volume_set(chip, chip->compr_offload_volume, idx, 0);
 
+	chip->compr_offload_stream = alsa_stream;
 	mutex_unlock(&chip->audio_mutex);
 
 	return 0;
@@ -408,6 +413,7 @@ static int aoc_compr_playback_free(struct snd_compr_stream *cstream)
 		pr_err("ERR: interrupted while waiting for lock\n");
 		return -EINTR;
 	}
+	chip->compr_offload_stream = NULL;
 
 	pr_notice("alsa compr offload close\n");
 	free_aoc_audio_service(rtd->dai_link->name, alsa_stream->dev);
@@ -538,6 +544,8 @@ static int aoc_compr_trigger(struct snd_soc_component *component, struct snd_com
 			if (err != 0)
 				pr_err("failed to pause alsa device (%d)\n",
 				       err);
+			cstream->runtime->state = SNDRV_PCM_STATE_PAUSED;
+			wake_up(&cstream->runtime->sleep);
 		}
 		break;
 
@@ -556,6 +564,28 @@ static int aoc_compr_trigger(struct snd_soc_component *component, struct snd_com
 	}
 out:
 	return err;
+}
+
+int aoc_compr_get_position(struct aoc_alsa_stream *alsa_stream, uint64_t *position)
+{
+	uint64_t current_sample = 0;
+
+	if (position == NULL) {
+		pr_err("%s: invalid position\n", __func__);
+		return -EINVAL;
+	}
+
+	if (aoc_compr_offload_get_io_samples(alsa_stream, &current_sample) < 0) {
+		pr_err("%s: failed to get playback samples\n", __func__);
+		return -EINVAL;
+	}
+
+	*position = (current_sample - alsa_stream->compr_pcm_io_sample_base) *
+		    (long)alsa_stream->params_rate / AOC_COMPR_OFFLOAD_DEFAULT_SR;
+
+	pr_debug("%s: current_sample=%llu base=%llu\n", __func__,
+			current_sample, alsa_stream->compr_pcm_io_sample_base);
+	return 0;
 }
 
 static int aoc_compr_pointer(struct snd_soc_component *component, struct snd_compr_stream *cstream,
@@ -656,6 +686,10 @@ static int aoc_compr_get_codec_caps(struct snd_soc_component *component,
 	pr_debug("%s, %d\n", __func__, codec->codec);
 
 	switch (codec->codec) {
+#if !IS_ENABLED(CONFIG_SOC_GS101) && !IS_ENABLED(CONFIG_SOC_GS201)
+	case SND_AUDIOCODEC_PCM:
+		break;
+#endif
 	case SND_AUDIOCODEC_MP3:
 		break;
 	case SND_AUDIOCODEC_AAC:
@@ -721,14 +755,42 @@ static int aoc_compr_get_metadata(struct snd_soc_component *component,
 	return ret;
 }
 
+static int snd_audiocodec_to_aoc_decoder(int snd_type, int codec_param)
+{
+	pr_info("%s: snd_type=%x, codec_param=%x\n", __func__, snd_type, codec_param);
+#if IS_ENABLED(CONFIG_SOC_ZUMA)
+	if (((codec_param >> 16) & 0xFFFF) == AOC_CODEC_TAG) {
+		int codec = codec_param & 0xFFFF;
+		if (codec == AOC_CODEC_OPUS)
+			return AUDIO_OUTPUT_DECODER_OPUS;
+	}
+#endif
+	switch(snd_type) {
+#if !IS_ENABLED(CONFIG_SOC_GS101) && !IS_ENABLED(CONFIG_SOC_GS201)
+	case SND_AUDIOCODEC_PCM:
+		return AUDIO_OUTPUT_DECODER_PCM;
+#endif
+	case SND_AUDIOCODEC_MP3:
+		return AUDIO_OUTPUT_DECODER_MP3;
+	case SND_AUDIOCODEC_AAC:
+		return AUDIO_OUTPUT_DECODER_AAC_LC;
+	default:
+		return AUDIO_OUTPUT_DECODER_UNKNOWN;
+	}
+}
+
 static int aoc_compr_set_params(struct snd_soc_component *component,
 				struct snd_compr_stream *cstream, struct snd_compr_params *params)
 {
 	struct snd_compr_runtime *runtime = cstream->runtime;
 	struct aoc_alsa_stream *alsa_stream = runtime->private_data;
+	struct snd_codec *codec = &params->codec;
 
 	uint8_t *temp_data_buf;
 	int buffer_size;
+#if !IS_ENABLED(CONFIG_SOC_GS101) && !IS_ENABLED(CONFIG_SOC_GS201)
+	int i;
+#endif
 
 	pr_debug("%s, fragment size = %d, number of fragment = %d\n", __func__,
 		 params->buffer.fragment_size, params->buffer.fragments);
@@ -753,7 +815,20 @@ static int aoc_compr_set_params(struct snd_soc_component *component,
 
 	/* TODO: need to double check on the AoC decoder requirements */
 	alsa_stream->channels  =  params->codec.ch_out;
-	alsa_stream->compr_offload_codec = params->codec.id;
+	alsa_stream->compr_offload_codec =
+		snd_audiocodec_to_aoc_decoder(params->codec.id, codec->reserved[0]);
+	memset(alsa_stream->compr_offload_codec_options, 0,
+		sizeof(alsa_stream->compr_offload_codec_options));
+#if !IS_ENABLED(CONFIG_SOC_GS101) && !IS_ENABLED(CONFIG_SOC_GS201)
+	if (alsa_stream->compr_offload_codec == AUDIO_OUTPUT_DECODER_PCM)
+		for(i = 0;i < CODEC_RESERVED_SIZE;i ++)
+			alsa_stream->compr_offload_codec_options[i] =
+				(uint8_t)codec->reserved[i];
+#endif
+	if (alsa_stream->compr_offload_codec == AUDIO_OUTPUT_DECODER_UNKNOWN) {
+		pr_err("ERR: unsupport codec %x\n", params->codec.id);
+		return -EINVAL;
+	}
 	/* TODO: send the codec info to AoC ? */
 
 	return 0;

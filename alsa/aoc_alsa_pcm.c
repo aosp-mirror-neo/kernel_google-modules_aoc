@@ -6,6 +6,7 @@
  *
  */
 
+#include <linux/dma-mapping.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/version.h>
@@ -181,10 +182,10 @@ static struct snd_pcm_hardware snd_aoc_playback_hw = {
 	.rate_min = 8000,
 	.rate_max = 96000,
 	.channels_min = 1,
-	.channels_max = 4,
+	.channels_max = 6,
 	.buffer_bytes_max = 16384 * 6,
 	.period_bytes_min = 16,
-	.period_bytes_max = 11520,
+	.period_bytes_max = 15360,
 	.periods_min = 2,
 	.periods_max = 1024 * 6,
 };
@@ -201,7 +202,8 @@ static enum hrtimer_restart aoc_pcm_irq_process(struct aoc_alsa_stream *alsa_str
 	 * the playback case represents what has been read from the buffer,
 	 * not what already played out .
 	*/
-	if (alsa_stream->dev == NULL)
+	if (alsa_stream->dev == NULL ||
+		 alsa_stream->substream->runtime->status->state != SNDRV_PCM_STATE_RUNNING)
 		return HRTIMER_RESTART;
 
 	dev = alsa_stream->dev;
@@ -569,6 +571,9 @@ static int snd_aoc_pcm_prepare(struct snd_soc_component *component,
 		}
 	}
 
+	alsa_stream->buffer_size = snd_pcm_lib_buffer_bytes(substream);
+	alsa_stream->period_size = snd_pcm_lib_period_bytes(substream);
+
 	/* Set the audio formats and flush the DRAM buffer */
 	err = aoc_audio_set_params(alsa_stream, channels, alsa_stream->params_rate,
 				   alsa_stream->pcm_format_width, alsa_stream->pcm_float_fmt,
@@ -586,8 +591,6 @@ static int snd_aoc_pcm_prepare(struct snd_soc_component *component,
 
 	/* in preparation of the stream */
 	/* aoc_audio_set_ctls(alsa_stream->chip); */
-	alsa_stream->buffer_size = snd_pcm_lib_buffer_bytes(substream);
-	alsa_stream->period_size = snd_pcm_lib_period_bytes(substream);
 	alsa_stream->pos = 0;
 	alsa_stream->prev_pos = 0;
 	alsa_stream->pos_delta = 0;
@@ -777,6 +780,9 @@ static int snd_aoc_pcm_lib_ioctl(struct snd_soc_component *component,
 static int aoc_pcm_new(struct snd_soc_component *component, struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_pcm_substream *substream = NULL;
+
+	dma_set_mask_and_coherent(component->dev, DMA_BIT_MASK(64));
+
 	/* Allocate DMA memory */
 	if (rtd->dai_link->dpcm_playback) {
 		substream = rtd->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream;
