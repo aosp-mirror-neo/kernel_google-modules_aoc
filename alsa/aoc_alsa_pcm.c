@@ -784,7 +784,7 @@ static int aoc_pcm_new(struct snd_soc_component *component, struct snd_soc_pcm_r
 	dma_set_mask_and_coherent(component->dev, DMA_BIT_MASK(64));
 
 	/* Allocate DMA memory */
-	if (rtd->dai_link->dpcm_playback) {
+	if (rtd->dai_link->playback_only) {
 		substream = rtd->pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream;
 		snd_pcm_lib_preallocate_pages(substream, SNDRV_DMA_TYPE_CONTINUOUS,
 					      component->dev,
@@ -792,7 +792,7 @@ static int aoc_pcm_new(struct snd_soc_component *component, struct snd_soc_pcm_r
 					      snd_aoc_playback_hw.buffer_bytes_max);
 	}
 
-	if (rtd->dai_link->dpcm_capture) {
+	if (rtd->dai_link->capture_only) {
 		substream = rtd->pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream;
 		snd_pcm_lib_preallocate_pages(substream, SNDRV_DMA_TYPE_CONTINUOUS,
 					      component->dev,
