@@ -231,8 +231,8 @@ static int snd_aoc_pcm_open(struct snd_soc_component *component,
 		alsa_stream->isr_type = INTR;
 	} else {
 		alsa_stream->timer_interval_ns = PCM_TIMER_INTERVAL_NANOSECS;
-		hrtimer_init(&(alsa_stream->hr_timer), CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-		alsa_stream->hr_timer.function = &aoc_voip_hrtimer_irq_handler;
+		hrtimer_setup(&alsa_stream->hr_timer, aoc_voip_hrtimer_irq_handler,
+			      CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 		alsa_stream->isr_type = TIMER;
 	}
 

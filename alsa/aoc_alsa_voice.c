@@ -121,9 +121,9 @@ static int snd_aoc_pcm_open(struct snd_soc_component *component,
 	alsa_stream->draining = 1;
 
 	alsa_stream->timer_interval_ns = PCM_TIMER_INTERVAL_NANOSECS;
-	timer_setup(&(alsa_stream->timer), aoc_pcm_timer_irq_handler, 0);
-	hrtimer_init( &(alsa_stream->hr_timer), CLOCK_MONOTONIC, HRTIMER_MODE_REL );
-	alsa_stream->hr_timer.function = &aoc_pcm_hrtimer_irq_handler;
+	timer_setup(&alsa_stream->timer, aoc_pcm_timer_irq_handler, 0);
+	hrtimer_setup(&alsa_stream->hr_timer, aoc_pcm_hrtimer_irq_handler,
+		      CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 
 	chip->default_mic_hw_gain =
 		aoc_mic_hw_gain_get(chip, MIC_HIGH_POWER_GAIN);
