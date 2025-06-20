@@ -236,10 +236,6 @@ void aoc_set_map_handler(struct aoc_service_dev *dev, aoc_map_handler handler,
 void aoc_remove_map_handler(struct aoc_service_dev *dev);
 void aoc_trigger_watchdog(const char *reason);
 
-extern u32 gs_chipid_get_revision(void);
-extern u32 gs_chipid_get_type(void);
-extern u32 gs_chipid_get_product_id(void);
-
 bool aoc_release_from_reset(struct aoc_prvdata *prvdata);
 
 void *aoc_sram_translate(u32 offset);

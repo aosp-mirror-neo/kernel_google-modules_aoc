@@ -43,6 +43,7 @@
 #include <soc/google/debug-snapshot.h>
 #include <soc/google/exynos-cpupm.h>
 #include <soc/google/exynos-pmu-if.h>
+#include <soc/google/gs-chipid.h>
 
 #include <linux/gsa/gsa_aoc.h>
 #include "ion_physical_heap.h"
@@ -359,8 +360,6 @@ static void aoc_mbox_tx_prepare(struct mbox_client *cl, void *mssg)
 static void aoc_mbox_tx_done(struct mbox_client *cl, void *mssg, int r)
 {
 }
-
-extern int gs_chipid_get_ap_hw_tune_array(const u8 **array);
 
 static inline bool aoc_sram_was_repaired(struct aoc_prvdata *prvdata) { return false; }
 
