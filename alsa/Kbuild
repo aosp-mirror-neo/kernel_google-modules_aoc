@@ -4,8 +4,8 @@
 #
 
 # Only one of them exists at build time, depending on :radio flag.
-ccflags-y += -I$(srctree)/../private/google-modules/radio/samsung/s5300
-ccflags-y += -I$(srctree)/../private/google-modules/radio/samsung/s5400
+ccflags-$(CONFIG_RADIO_S5300) += -I$(srctree)/../private/google-modules/radio/samsung/s5300
+ccflags-$(CONFIG_RADIO_S5400) += -I$(srctree)/../private/google-modules/radio/samsung/s5400
 ccflags-y += -I$(srctree)/../private/google-modules/aoc_ipc
 ccflags-y += -I$(srctree)/../private/google-modules/aoc
 ccflags-y += -I$(srctree)/../private/google-modules/amplifiers/audiometrics
