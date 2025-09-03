@@ -38,7 +38,7 @@ err_exit:
 	return ret;
 }
 
-static void value_set(struct gpio_chip *gc, unsigned offset, int value)
+static int value_set(struct gpio_chip *gc, unsigned offset, int value)
 {
 	struct CMD_UWB_SET_RESET_GPIO cmd = { 0 };
 	int ret;
@@ -46,7 +46,7 @@ static void value_set(struct gpio_chip *gc, unsigned offset, int value)
 	dev_dbg(gc->parent, "value=%d\n", value);
 	if (offset) {
 		dev_err(gc->parent, "wrong offset\n");
-		return;
+		return -EINVAL;
 	}
 
 	AocCmdHdrSet(&cmd.parent, CMD_UWB_SET_RESET_GPIO_ID, sizeof(cmd));
@@ -54,6 +54,8 @@ static void value_set(struct gpio_chip *gc, unsigned offset, int value)
 	ret = aoc_uwb_service_send(&cmd, sizeof(cmd));
 	if (ret < 0)
 		dev_err(gc->parent, "error sending pin set to aoc ret=%d\n", ret);
+
+	return ret;
 }
 
 static int aoc_uwb_reset_set_direction(struct gpio_chip *gc, bool output)
