@@ -107,7 +107,7 @@ static int uwb_pdrv_pin_init(struct platform_device *pdev)
 
 	chip.label = node->name;
 	chip.parent = dev;
-	chip.fwnode = of_node_to_fwnode(node);
+	chip.fwnode = of_fwnode_handle(node);
 	chip.ngpio = ngpio;
 	return devm_gpiochip_add_data(dev, &chip, NULL);
 }
