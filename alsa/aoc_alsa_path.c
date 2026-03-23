@@ -1228,7 +1228,7 @@ static int aoc_path_put(uint32_t ep_id, uint32_t hw_id,
 			struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_dapm_widget *widget =
-		snd_soc_dapm_kcontrol_widget(kcontrol);
+		snd_soc_dapm_kcontrol_to_widget(kcontrol);
 	struct snd_soc_component *component =
 		snd_soc_dapm_to_component(widget->dapm);
 	struct aoc_chip *chip =
@@ -2371,7 +2371,7 @@ static int aoc_of_xlate_dai_name(struct snd_soc_component *component,
 
 static int aoc_cmp_probe(struct snd_soc_component *comp)
 {
-	struct snd_soc_dapm_context *dapm = snd_soc_component_get_dapm(comp);
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(comp);
 	int ret;
 
 	ret = snd_soc_dapm_new_controls(dapm, aoc_widget,
