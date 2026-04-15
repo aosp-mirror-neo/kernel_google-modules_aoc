@@ -84,7 +84,6 @@ static void sscd_release(struct device *dev);
 static struct sscd_info sscd_info;
 static struct sscd_platform_data sscd_pdata;
 static struct platform_device sscd_dev = { .name = "aoc",
-					   .driver_override = SSCD_NAME,
 					   .id = -1,
 					   .dev = {
 						   .platform_data = &sscd_pdata,
@@ -2727,6 +2726,11 @@ static int __init aoc_init(void)
 	if (platform_driver_register(&aoc_driver) != 0) {
 		pr_err("failed to register platform driver\n");
 		goto err_aoc_driver;
+	}
+
+	if (device_set_driver_override(&sscd_dev.dev, SSCD_NAME)) {
+		pr_err("failed to set driver override\n");
+		goto err_aoc_coredump;
 	}
 
 	if (platform_device_register(&sscd_dev) != 0) {
