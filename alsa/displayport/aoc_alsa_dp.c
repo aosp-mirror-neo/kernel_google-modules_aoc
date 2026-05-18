@@ -274,7 +274,7 @@ static const struct snd_soc_component_driver aoc_dp_component = {
 	.trigger = snd_aoc_dp_trigger,
 	.pointer = snd_aoc_dp_pointer,
 	.prepare = snd_aoc_dp_prepare,
-	.pcm_construct = aoc_dp_new,
+	.pcm_new = aoc_dp_new,
 };
 
 static int aoc_dp_probe(struct platform_device *pdev)

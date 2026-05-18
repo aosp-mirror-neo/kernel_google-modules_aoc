@@ -120,7 +120,7 @@ static const struct snd_soc_component_driver aoc_nohost_component = {
 	.hw_params = snd_aoc_nohost_hw_params,
 	.hw_free = snd_aoc_nohost_hw_free,
 	.prepare = snd_aoc_nohost_prepare,
-	.pcm_construct = aoc_nohost_new,
+	.pcm_new = aoc_nohost_new,
 };
 
 static int aoc_nohost_probe(struct platform_device *pdev)

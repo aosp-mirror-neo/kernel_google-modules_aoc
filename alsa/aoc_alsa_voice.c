@@ -329,7 +329,7 @@ static const struct snd_soc_component_driver aoc_pcm_component = {
 	.hw_params = snd_aoc_pcm_hw_params,
 	.hw_free = snd_aoc_pcm_hw_free,
 	.prepare = snd_aoc_pcm_prepare,
-	.pcm_construct = aoc_pcm_new,
+	.pcm_new = aoc_pcm_new,
 };
 
 static int aoc_pcm_probe(struct platform_device *pdev)

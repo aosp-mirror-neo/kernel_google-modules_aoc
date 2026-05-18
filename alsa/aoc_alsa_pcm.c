@@ -818,7 +818,7 @@ static const struct snd_soc_component_driver aoc_pcm_component = {
 	.trigger = snd_aoc_pcm_trigger,
 	.pointer = snd_aoc_pcm_pointer,
 	.mmap = snd_aoc_pcm_mmap,
-	.pcm_construct = aoc_pcm_new,
+	.pcm_new = aoc_pcm_new,
 };
 
 static int aoc_pcm_probe(struct platform_device *pdev)

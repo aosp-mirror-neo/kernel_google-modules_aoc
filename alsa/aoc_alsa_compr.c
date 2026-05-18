@@ -870,7 +870,7 @@ static int aoc_compr_new(struct snd_soc_component *component, struct snd_soc_pcm
 static const struct snd_soc_component_driver aoc_compr_component = {
 	.name = "AoC COMPR",
 	.compress_ops = &snd_aoc_compr_ops,
-	.pcm_construct = aoc_compr_new,
+	.pcm_new = aoc_compr_new,
 };
 #elif (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 18, 0))
 static const struct snd_soc_component_driver aoc_compr_component = {
