@@ -22,7 +22,6 @@
 #define ACD_CHARDEV_NAME "aoc_char"
 
 static int acd_major = -1;
-static int acd_major_dev;
 static unsigned int acd_next_minor; /* protected by acd_devices_lock */
 static struct class *acd_class;
 
@@ -338,8 +337,6 @@ static int __init acd_init(void)
 		pr_err("Failed to register character major number\n");
 		goto fail;
 	}
-
-	acd_major_dev = MKDEV(acd_major, 0);
 
 	acd_class = class_create(ACD_CHARDEV_NAME);
 	if (!acd_class) {

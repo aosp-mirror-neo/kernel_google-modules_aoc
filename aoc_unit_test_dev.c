@@ -21,7 +21,6 @@ enum AOC_UNIT_TEST_STATUS {
 	AOC_UNIT_TEST_PASSED
 };
 
-static struct aoc_service_dev *aoc_unit_test_service = NULL;
 static const char * const service_names[] = {
 	AOC_SERVICE_NAME,
 	NULL,
@@ -82,8 +81,6 @@ static int aoc_unit_test_service_probe(struct aoc_service_dev *sd)
 	struct device *dev = &sd->dev;
 	int ret;
 
-	aoc_unit_test_service = sd;
-
 	ret = device_add_groups(dev, aoc_unit_test_groups);
 	if (ret)
 		dev_err(dev, "Failed to add unit test attributes device groups\n");
@@ -97,7 +94,6 @@ static int aoc_unit_test_service_remove(struct aoc_service_dev *sd)
 {
 	struct device *dev = &sd->dev;
 
-	aoc_unit_test_service = NULL;
 	device_remove_groups(dev, aoc_unit_test_groups);
 	return 0;
 }
